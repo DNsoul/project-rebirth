@@ -1,31 +1,13 @@
 import 'dart:async';
 
-import 'package:awg_client/core/controller.dart';
 import 'package:awg_client/core/updater.dart';
-import 'package:awg_client/ui/home_page.dart';
 import 'package:awg_client/ui/theme.dart';
+import 'package:awg_client/ui/update_banner.dart';
 import 'package:awg_proto/awg_proto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fakes.dart';
-
-class _View implements ConnectionView {
-  @override
-  AppStatus get status => const AppStatus(Phase.idle);
-
-  @override
-  Stream<AppStatus> get statusStream => const Stream.empty();
-
-  @override
-  Future<void> connect() async {}
-
-  @override
-  Future<void> disconnect() async {}
-
-  @override
-  Future<void> cancel() async {}
-}
 
 class _Updates implements UpdateView {
   _Updates([this._status]);
@@ -33,7 +15,6 @@ class _Updates implements UpdateView {
   UpdateStatus? _status;
   final _controller = StreamController<UpdateStatus?>.broadcast();
   int installs = 0;
-  int dismissals = 0;
 
   void show(UpdateStatus? s) {
     _status = s;
@@ -48,164 +29,155 @@ class _Updates implements UpdateView {
 
   @override
   Future<void> install() async => installs++;
-
-  @override
-  void dismiss() => dismissals++;
 }
 
-UpdateOffer offer({
+UpdateStatus status(
+  UpdatePhase phase, {
   bool mandatory = false,
-  String notes = 'Быстрее подключается',
+  double progress = 0,
 }) {
-  final r = unsignedRelease(notes: notes);
-  return UpdateOffer(
-    release: r,
-    asset: r.asset(osWindows)!,
-    mandatory: mandatory,
+  final r = unsignedRelease();
+  return UpdateStatus(
+    phase,
+    UpdateOffer(release: r, asset: r.asset(osWindows)!, mandatory: mandatory),
+    progress: progress,
   );
 }
 
-Widget screen(UpdateView updates) => MaterialApp(
+Widget bar(UpdateView updates, {double topInset = 0}) => MaterialApp(
   theme: appTheme(),
-  home: HomePage(controller: _View(), hint: 'Подсказка', updates: updates),
+  home: Scaffold(
+    backgroundColor: Ember.background,
+    body: Align(
+      alignment: Alignment.topCenter,
+      child: UpdateBanner(updates: updates, topInset: topInset),
+    ),
+  ),
 );
 
 void main() {
-  testWidgets('shows only the usual advice when there is nothing to offer', (
-    tester,
-  ) async {
-    await tester.pumpWidget(screen(_Updates()));
+  testWidgets('shows nothing when there is nothing to offer', (tester) async {
+    await tester.pumpWidget(bar(_Updates()));
     expect(find.byKey(const ValueKey('update-banner')), findsNothing);
-    expect(find.textContaining('Серверы меняются сами'), findsOneWidget);
+    expect(find.byType(Text), findsNothing);
   });
 
-  testWidgets('offers the new version in the place of the advice', (
-    tester,
-  ) async {
-    await tester.pumpWidget(
-      screen(_Updates(UpdateStatus(UpdatePhase.available, offer()))),
-    );
-    expect(find.text('Доступна версия 1.2.0'), findsOneWidget);
-    expect(find.text('Быстрее подключается'), findsOneWidget);
+  testWidgets('says which version, and offers it', (tester) async {
+    await tester.pumpWidget(bar(_Updates(status(UpdatePhase.available))));
+    expect(find.text('Версия 1.2.0'), findsOneWidget);
     expect(find.text('Обновить'), findsOneWidget);
-    expect(find.text('Позже'), findsOneWidget);
-    expect(find.textContaining('Серверы меняются сами'), findsNothing);
   });
 
-  testWidgets('the button installs, and "later" puts it off', (tester) async {
-    final updates = _Updates(UpdateStatus(UpdatePhase.available, offer()));
-    await tester.pumpWidget(screen(updates));
+  testWidgets('the whole line is the button', (tester) async {
+    final updates = _Updates(status(UpdatePhase.available));
+    await tester.pumpWidget(bar(updates));
 
-    await tester.tap(find.byKey(const ValueKey('update-install')));
-    await tester.tap(find.byKey(const ValueKey('update-later')));
-
+    // Not the word: the empty middle of the line.
+    await tester.tapAt(
+      tester.getCenter(find.byKey(const ValueKey('update-install'))),
+    );
     expect(updates.installs, 1);
-    expect(updates.dismissals, 1);
   });
 
-  testWidgets('a mandatory update leaves no "later"', (tester) async {
-    await tester.pumpWidget(
-      screen(
-        _Updates(UpdateStatus(UpdatePhase.available, offer(mandatory: true))),
-      ),
-    );
-    expect(
-      find.textContaining('Нужно обновить приложение до 1.2.0'),
-      findsOneWidget,
-    );
-    expect(find.textContaining('больше не будет работать'), findsOneWidget);
-    expect(find.byKey(const ValueKey('update-later')), findsNothing);
-    expect(find.byKey(const ValueKey('update-install')), findsOneWidget);
+  testWidgets('has no way to put it off', (tester) async {
+    await tester.pumpWidget(bar(_Updates(status(UpdatePhase.available))));
+    expect(find.byType(IconButton), findsNothing);
+    expect(find.byIcon(Icons.close_rounded), findsNothing);
+    expect(find.text('Позже'), findsNothing);
   });
 
-  testWidgets('says how far the download is, and has no buttons meanwhile', (
+  testWidgets('asks to update, when the old version no longer works', (
     tester,
   ) async {
     await tester.pumpWidget(
-      screen(
-        _Updates(
-          UpdateStatus(UpdatePhase.downloading, offer(), progress: 0.42),
-        ),
-      ),
+      bar(_Updates(status(UpdatePhase.available, mandatory: true))),
     );
-    expect(find.text('Скачиваю версию 1.2.0… 42%'), findsOneWidget);
-    final bar = tester.widget<LinearProgressIndicator>(
+    expect(find.text('Обновите до 1.2.0'), findsOneWidget);
+    expect(find.text('Обновить'), findsOneWidget);
+  });
+
+  testWidgets('says how far the download is, and cannot be pressed meanwhile', (
+    tester,
+  ) async {
+    final updates = _Updates(status(UpdatePhase.downloading, progress: 0.42));
+    await tester.pumpWidget(bar(updates));
+    expect(find.text('Скачиваю 1.2.0'), findsOneWidget);
+    expect(find.text('42%'), findsOneWidget);
+    final line = tester.widget<LinearProgressIndicator>(
       find.byKey(const ValueKey('update-progress')),
     );
-    expect(bar.value, closeTo(0.42, 1e-9));
-    expect(find.byKey(const ValueKey('update-install')), findsNothing);
+    expect(line.value, closeTo(0.42, 1e-9));
+    expect(line.minHeight, lessThanOrEqualTo(3), reason: 'a thin line');
+
+    await tester.tapAt(
+      tester.getCenter(find.byKey(const ValueKey('update-install'))),
+    );
+    expect(updates.installs, 0);
   });
 
-  testWidgets('says what went wrong, and offers to try again', (tester) async {
-    final updates = _Updates(
-      UpdateStatus(
-        UpdatePhase.failed,
-        offer(),
-        message: 'Нет связи с сервером.',
-      ),
-    );
-    await tester.pumpWidget(screen(updates));
+  testWidgets('says the setup is starting', (tester) async {
+    await tester.pumpWidget(bar(_Updates(status(UpdatePhase.installing))));
+    expect(find.text('Запускаю установщик…'), findsOneWidget);
+    expect(find.byKey(const ValueKey('update-action')), findsNothing);
+  });
 
-    expect(find.text('Обновиться не получилось'), findsOneWidget);
-    expect(find.text('Нет связи с сервером.'), findsOneWidget);
+  testWidgets('after a failure turns red and offers to try again', (
+    tester,
+  ) async {
+    final updates = _Updates(status(UpdatePhase.failed));
+    await tester.pumpWidget(bar(updates));
+    expect(find.text('Сбой обновления'), findsOneWidget);
+    final title = tester.widget<Text>(
+      find.byKey(const ValueKey('update-title')),
+    );
+    expect(title.style?.color, Ember.alarm);
+
     await tester.tap(find.text('Повторить'));
     expect(updates.installs, 1);
+    expect(
+      find.text('Нет связи'),
+      findsNothing,
+      reason: 'what went wrong is for the bottom of the window, not here',
+    );
   });
 
-  testWidgets('appears when an offer arrives, and goes when it is withdrawn', (
+  testWidgets('runs under the status bar and keeps its text clear of it', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      bar(_Updates(status(UpdatePhase.available)), topInset: 30),
+    );
+    final line = tester.getRect(find.byKey(const ValueKey('update-banner')));
+    expect(line.top, 0);
+    expect(
+      tester.getTopLeft(find.byKey(const ValueKey('update-title'))).dy,
+      greaterThanOrEqualTo(30),
+    );
+  });
+
+  testWidgets('appears when an offer arrives and goes when it is withdrawn', (
     tester,
   ) async {
     final updates = _Updates();
-    await tester.pumpWidget(screen(updates));
+    await tester.pumpWidget(bar(updates));
     expect(find.byKey(const ValueKey('update-banner')), findsNothing);
 
-    updates.show(UpdateStatus(UpdatePhase.available, offer()));
-    await tester.pump();
+    updates.show(status(UpdatePhase.available));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('update-banner')), findsOneWidget);
 
     updates.show(null);
-    await tester.pump();
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('update-banner')), findsNothing);
-    expect(find.textContaining('Серверы меняются сами'), findsOneWidget);
   });
 
-  testWidgets('the button does not move when the offer appears', (
+  testWidgets('a long version does not break the line on a phone', (
     tester,
   ) async {
-    final updates = _Updates();
-    await tester.pumpWidget(screen(updates));
-    final before = tester.getCenter(find.byKey(const ValueKey('power-button')));
-
-    updates.show(UpdateStatus(UpdatePhase.available, offer()));
-    await tester.pump();
-    await tester.pumpAndSettle();
-
-    expect(
-      tester.getCenter(find.byKey(const ValueKey('power-button'))),
-      before,
-    );
-  });
-
-  testWidgets('a long note does not break the layout on a phone', (
-    tester,
-  ) async {
-    tester.view.physicalSize = const Size(360 * 3, 640 * 3);
-    tester.view.devicePixelRatio = 3;
+    tester.view.physicalSize = const Size(220, 400);
+    tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
-
-    await tester.pumpWidget(
-      screen(
-        _Updates(
-          UpdateStatus(
-            UpdatePhase.available,
-            offer(notes: 'очень длинное описание ' * 40),
-          ),
-        ),
-      ),
-    );
+    await tester.pumpWidget(bar(_Updates(status(UpdatePhase.available))));
     expect(tester.takeException(), isNull);
-    expect(find.text('Обновить'), findsOneWidget);
   });
 }

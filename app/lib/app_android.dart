@@ -120,15 +120,7 @@ Future<void> runAndroid(List<String> args) async {
 
   controller.statusStream.listen(tell);
 
-  runApp(
-    App(
-      controller: controller,
-      updates: updates,
-      hint:
-          'Соединение держится, пока приложение запущено.\n'
-          'Отключить можно здесь или в настройках VPN.',
-    ),
-  );
+  runApp(App(controller: controller, updates: updates));
 
   StallWatchdog(log: log).start();
   unawaited(

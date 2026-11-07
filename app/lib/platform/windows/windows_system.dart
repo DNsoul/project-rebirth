@@ -26,7 +26,7 @@ class WindowsDnsGuard implements DnsGuard {
     final r = await _run('powershell.exe', powershellArguments(script));
     if (r.exitCode != 0) {
       throw StateError(
-        'Не удалось изменить правила разрешения имён: ${'${r.stderr}'.trim()}',
+        'Не удалось изменить правила разрешения имён. Повторите попытку. (${'${r.stderr}'.trim()})',
       );
     }
   }

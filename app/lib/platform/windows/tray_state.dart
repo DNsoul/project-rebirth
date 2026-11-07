@@ -1,5 +1,5 @@
 import '../../core/controller.dart';
-import '../../ui/home_page.dart' show regionLabel;
+import '../../core/regions.dart' show regionLabel;
 
 /// Which of the four icons the notification area shows.
 enum TrayIcon {

@@ -445,7 +445,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
             Phase.connected,
             region: active.body.region,
             since: active.since,
-            note: 'Переход на новый сервер отменён.',
+            note: 'Переход на новый сервер отменён. Остаёмся на прежнем.',
           ),
         );
       }
@@ -458,7 +458,8 @@ class ConnectionController implements ConnectionView, ReleaseSource {
           Phase.connected,
           region: active.body.region,
           since: active.since,
-          note: 'Новый сервер пока не отвечает, остаюсь на прежнем.',
+          note:
+              'Новый сервер пока не отвечает, остаёмся на прежнем. Попробуем снова через минуту.',
         ),
       );
     }
@@ -536,7 +537,8 @@ class ConnectionController implements ConnectionView, ReleaseSource {
       if (accepted != null) {
         return accepted;
       }
-      gistProblem ??= 'Опубликованные настройки не прошли проверку подписи.';
+      gistProblem ??=
+          'Настройки сервера не прошли проверку подписи. Если так повторяется, установите свежую версию Rebirth.';
     }
 
     final cached = state.configBody;
@@ -547,7 +549,8 @@ class ConnectionController implements ConnectionView, ReleaseSource {
       return ConfigBody.parse(cached);
     }
     throw ConnectException(
-      gistProblem ?? 'Нет сохранённых настроек, а прочитать новые не удалось.',
+      gistProblem ??
+          'Не удалось получить настройки. Проверьте интернет и повторите.',
     );
   }
 
@@ -776,7 +779,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         const Duration(seconds: 10),
       )) {
         throw ConnectException(
-          'Сервер принял регистрацию, но не отвечает. Возможно, он уже заменён: попробуй ещё раз.',
+          'Сервер принял регистрацию, но не отвечает. Возможно, его уже заменили: повторите через минуту.',
         );
       }
       address = registered;
@@ -854,7 +857,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     final info = body.enroll;
     if (info == null) {
       throw ConnectException(
-        'Этот сервер собран по старому образцу и не принимает новых устройств.',
+        'Этот сервер старой версии и не принимает новые устройства. Повторите позже: серверы со временем заменяются.',
       );
     }
     final conf = renderClientConf(
@@ -896,7 +899,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     } on TimeoutException {
       _log('registration timed out: ${transport.describe()}');
       throw ConnectException(
-        'Сервер не ответил на регистрацию. Проверь связь и попробуй ещё раз.',
+        'Сервер не ответил на регистрацию. Проверьте интернет и повторите.',
       );
     } finally {
       await transport.close();
@@ -927,7 +930,9 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     try {
       machineId = await machine.machineId();
     } catch (_) {
-      throw ConnectException('Не удалось определить это устройство.');
+      throw ConnectException(
+        'Не удалось определить это устройство. Перезапустите Rebirth.',
+      );
     }
     return _Identity(
       await deviceIdFrom(machineId),
@@ -1015,12 +1020,12 @@ class ConnectionController implements ConnectionView, ReleaseSource {
       return e.message;
     }
     if (e is ProtoException) {
-      return 'Настройки не прошли проверку: ${e.message}';
+      return 'Настройки не прошли проверку. Если так повторяется, установите свежую версию Rebirth. (${e.message})';
     }
     if (e is TimeoutException) {
-      return 'Сервер не ответил вовремя.';
+      return 'Сервер не ответил вовремя. Повторите попытку.';
     }
-    return 'Не удалось подключиться: $e';
+    return 'Не удалось подключиться. Повторите попытку. ($e)';
   }
 }
 

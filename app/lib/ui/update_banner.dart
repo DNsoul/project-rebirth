@@ -5,19 +5,21 @@ import 'package:flutter/material.dart';
 import '../core/updater.dart';
 import 'theme.dart';
 
-/// Says that a newer version exists and offers to install it. Shows nothing
-/// when there is nothing to offer.
+/// A newer version exists: one flat line along the top edge of the window. The
+/// whole line is the button. It stays until the version is installed, and shows
+/// nothing when there is nothing to offer.
+///
+/// It says only that, and how the download is going. If the update fails the
+/// title turns red and the line offers to try again; what went wrong is in the
+/// bar at the bottom, where every error is.
 class UpdateBanner extends StatelessWidget {
-  const UpdateBanner({
-    super.key,
-    required this.updates,
-    required this.fallback,
-  });
+  const UpdateBanner({super.key, required this.updates, this.topInset = 0});
 
   final UpdateView updates;
 
-  /// What stands in this place when there is no offer.
-  final Widget fallback;
+  /// The height of whatever the system draws over the top of the window (the
+  /// status bar). The line runs under it and keeps its text clear.
+  final double topInset;
 
   @override
   Widget build(BuildContext context) {
@@ -27,14 +29,25 @@ class UpdateBanner extends StatelessWidget {
       builder: (context, snapshot) {
         final s = snapshot.data;
         return AnimatedSwitcher(
-          duration: const Duration(milliseconds: 250),
+          duration: const Duration(milliseconds: 220),
+          transitionBuilder: (child, animation) => FadeTransition(
+            opacity: animation,
+            child: SizeTransition(
+              sizeFactor: animation,
+              axisAlignment: -1,
+              child: child,
+            ),
+          ),
           child: s == null
-              ? KeyedSubtree(key: const ValueKey('no-update'), child: fallback)
-              : _Card(
+              ? const SizedBox(
+                  key: ValueKey('no-update'),
+                  width: double.infinity,
+                )
+              : _Line(
                   key: const ValueKey('update-banner'),
                   status: s,
+                  topInset: topInset,
                   onInstall: () => unawaited(updates.install()),
-                  onLater: updates.dismiss,
                 ),
         );
       },
@@ -42,130 +55,96 @@ class UpdateBanner extends StatelessWidget {
   }
 }
 
-class _Card extends StatelessWidget {
-  const _Card({
+class _Line extends StatelessWidget {
+  const _Line({
     super.key,
     required this.status,
+    required this.topInset,
     required this.onInstall,
-    required this.onLater,
   });
 
   final UpdateStatus status;
+  final double topInset;
   final VoidCallback onInstall;
-  final VoidCallback onLater;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context).textTheme;
+    final style = Theme.of(
+      context,
+    ).textTheme.bodyMedium!.copyWith(fontSize: 13, fontWeight: FontWeight.w600);
     final offer = status.offer;
     final phase = status.phase;
-
-    final String title;
-    String? line;
-    switch (phase) {
-      case UpdatePhase.available:
-        title = offer.mandatory
-            ? 'Нужно обновить приложение до ${offer.version}'
-            : 'Доступна версия ${offer.version}';
-        line = offer.mandatory
-            ? 'Эта версия больше не будет работать с серверами.'
-            : (offer.notes.isEmpty ? null : offer.notes);
-      case UpdatePhase.downloading:
-        final pct = (status.progress * 100).floor();
-        title = pct > 0
-            ? 'Скачиваю версию ${offer.version}… $pct%'
-            : 'Скачиваю версию ${offer.version}…';
-      case UpdatePhase.installing:
-        title = 'Запускаю установщик…';
-        line = 'Приложение закроется и откроется заново.';
-      case UpdatePhase.failed:
-        title = 'Обновиться не получилось';
-        line = status.message;
-    }
-
     final failed = phase == UpdatePhase.failed;
     final working =
         phase == UpdatePhase.downloading || phase == UpdatePhase.installing;
 
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
-      decoration: BoxDecoration(
-        color: Ember.surfaceHigh,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: failed ? Ember.alarm : Ember.outline),
-      ),
+    final String title;
+    switch (phase) {
+      case UpdatePhase.available:
+        title = offer.mandatory
+            ? 'Обновите до ${offer.version}'
+            : 'Версия ${offer.version}';
+      case UpdatePhase.downloading:
+        title = 'Скачиваю ${offer.version}';
+      case UpdatePhase.installing:
+        title = 'Запускаю установщик…';
+      case UpdatePhase.failed:
+        title = 'Сбой обновления';
+    }
+    final String? action = switch (phase) {
+      UpdatePhase.available => 'Обновить',
+      UpdatePhase.failed => 'Повторить',
+      UpdatePhase.downloading => '${(status.progress * 100).floor()}%',
+      UpdatePhase.installing => null,
+    };
+
+    return Material(
+      color: Ember.surfaceHigh,
       child: Column(
         mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            title,
-            key: const ValueKey('update-title'),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: theme.titleSmall?.copyWith(
-              color: failed ? Ember.alarm : Ember.gold,
-              fontWeight: FontWeight.w600,
+          InkWell(
+            key: const ValueKey('update-install'),
+            onTap: working ? null : onInstall,
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(14, topInset + 10, 14, 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      title,
+                      key: const ValueKey('update-title'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: style.copyWith(
+                        color: failed ? Ember.alarm : Ember.gold,
+                      ),
+                    ),
+                  ),
+                  if (action != null) ...[
+                    const SizedBox(width: 12),
+                    Text(
+                      action,
+                      key: const ValueKey('update-action'),
+                      style: style.copyWith(
+                        color: working ? Ember.textDim : Ember.orange,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
             ),
           ),
-          if (line != null) ...[
-            const SizedBox(height: 4),
-            Text(
-              line,
-              key: const ValueKey('update-line'),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: theme.bodySmall?.copyWith(color: Ember.textDim),
-            ),
-          ],
-          const SizedBox(height: 10),
+          // A thin line that fills as the download goes.
           if (working)
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
-                key: const ValueKey('update-progress'),
-                value: phase == UpdatePhase.downloading && status.progress > 0
-                    ? status.progress
-                    : null,
-                minHeight: 6,
-                backgroundColor: Ember.outline,
-              ),
-            )
-          else
-            Row(
-              children: [
-                FilledButton(
-                  key: const ValueKey('update-install'),
-                  onPressed: onInstall,
-                  style: FilledButton.styleFrom(
-                    backgroundColor: Ember.orange,
-                    foregroundColor: const Color(0xFF2A1205),
-                    side: BorderSide.none,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 8,
-                    ),
-                    // The banner is small; the button is only as tall as it looks.
-                    minimumSize: const Size(0, 36),
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  ),
-                  child: Text(failed ? 'Повторить' : 'Обновить'),
-                ),
-                if (!offer.mandatory) ...[
-                  const SizedBox(width: 8),
-                  TextButton(
-                    key: const ValueKey('update-later'),
-                    onPressed: onLater,
-                    style: TextButton.styleFrom(
-                      foregroundColor: Ember.textDim,
-                      minimumSize: const Size(0, 36),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                    child: const Text('Позже'),
-                  ),
-                ],
-              ],
+            LinearProgressIndicator(
+              key: const ValueKey('update-progress'),
+              value: phase == UpdatePhase.downloading && status.progress > 0
+                  ? status.progress
+                  : null,
+              minHeight: 2,
+              backgroundColor: Ember.outline,
+              color: Ember.orange,
             ),
         ],
       ),

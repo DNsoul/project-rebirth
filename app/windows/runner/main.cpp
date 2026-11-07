@@ -72,9 +72,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   FlutterWindow window(project);
   window.SetStartHidden(start_hidden);
-  // A small window: one button and a few words.
+  // A narrow window, like a phone: one button in the middle of it, and room above
+  // and below for the offer of an update and for an error.
   Win32Window::Point origin(200, 120);
-  Win32Window::Size size(420, 620);
+  Win32Window::Size size(340, 560);
   if (!window.Create(kTitle, origin, size)) {
     return EXIT_FAILURE;
   }

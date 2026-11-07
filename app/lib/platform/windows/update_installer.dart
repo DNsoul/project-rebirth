@@ -41,7 +41,9 @@ class WindowsUpdateInstaller implements UpdateInstaller {
     try {
       await _start(file.path, arguments);
     } on Object catch (e) {
-      throw UpdateException('Не удалось запустить установщик: $e');
+      throw UpdateException(
+        'Не удалось запустить установщик. Повторите позже. ($e)',
+      );
     }
     _log('update: setup started, leaving');
     await leave();

@@ -8,21 +8,12 @@ import 'ui/home_page.dart';
 import 'ui/theme.dart';
 
 class App extends StatefulWidget {
-  const App({
-    super.key,
-    required this.controller,
-    required this.hint,
-    this.updates,
-  });
+  const App({super.key, required this.controller, this.updates});
 
   final ConnectionController controller;
 
   /// Offers a newer version, when there is one.
   final UpdateView? updates;
-
-  /// What the screen says under the button about the app staying in the
-  /// background, which differs between the systems.
-  final String hint;
 
   @override
   State<App> createState() => _AppState();
@@ -60,11 +51,7 @@ class _AppState extends State<App> {
       themeMode: ThemeMode.dark,
       theme: appTheme(Brightness.light),
       darkTheme: appTheme(Brightness.dark),
-      home: HomePage(
-        controller: widget.controller,
-        hint: widget.hint,
-        updates: widget.updates,
-      ),
+      home: HomePage(controller: widget.controller, updates: widget.updates),
     );
   }
 }

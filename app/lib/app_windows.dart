@@ -140,15 +140,7 @@ Future<void> runWindows(List<String> args) async {
   // The window comes first. Everything slow (looking for what a previous run left
   // behind, installing the start-up guard) happens behind it, and a connection
   // asked for meanwhile simply waits its turn.
-  runApp(
-    App(
-      controller: controller,
-      updates: updates,
-      hint:
-          'Окно можно закрыть: приложение останется в трее.\n'
-          'Выйти можно из меню значка.',
-    ),
-  );
+  runApp(App(controller: controller, updates: updates));
 
   StallWatchdog(log: log).start();
   unawaited(

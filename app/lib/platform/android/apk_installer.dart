@@ -39,14 +39,12 @@ class AndroidUpdateInstaller implements UpdateInstaller {
       answer = await bridge.installApk(file.path);
     } on PlatformException catch (e) {
       throw UpdateException(
-        'Не удалось передать обновление установщику: ${e.message ?? e.code}',
+        'Не удалось передать обновление установщику Android. Повторите позже. (${e.message ?? e.code})',
       );
     }
     if (answer == 'needs_permission') {
       throw UpdateException(
-        'Чтобы установить обновление, разрешите это приложению: в открывшихся '
-        'настройках включите «Установка неизвестных приложений», вернитесь '
-        'и нажмите «Повторить».',
+        'Нужно разрешить установку из Rebirth. В открывшихся настройках включите «Установка неизвестных приложений», вернитесь и нажмите «Повторить».',
       );
     }
   }

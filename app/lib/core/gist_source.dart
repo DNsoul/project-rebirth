@@ -78,37 +78,47 @@ class GithubGistSource implements GistSource {
       if (response.statusCode == HttpStatus.forbidden ||
           response.statusCode == HttpStatus.tooManyRequests) {
         throw GistException(
-          'GitHub временно не отвечает на запросы (лимит). Попробуй чуть позже.',
+          'GitHub временно ограничил запросы (лимит). Повторите через несколько минут.',
         );
       }
       if (response.statusCode == HttpStatus.notFound) {
         throw GistException(
-          'Адрес с настройками не найден: сборка приложения устарела или gist удалён.',
+          'Настройки не найдены: gist удалён или версия Rebirth устарела. Установите свежую версию.',
         );
       }
       if (response.statusCode != HttpStatus.ok) {
-        throw GistException('GitHub ответил ${response.statusCode}.');
+        throw GistException(
+          'GitHub ответил ошибкой ${response.statusCode}. Повторите позже.',
+        );
       }
       json = (jsonDecode(text) as Map).cast<String, Object?>();
       newEtag = response.headers.value(HttpHeaders.etagHeader);
     } on GistException {
       rethrow;
     } on TimeoutException {
-      throw GistException('GitHub не отвечает.');
+      throw GistException('GitHub не отвечает. Повторите позже.');
     } on SocketException {
-      throw GistException('Нет связи с GitHub.');
+      throw GistException('Нет связи с GitHub. Проверьте интернет.');
     } on HandshakeException {
       throw GistException(
-        'Не удалось установить защищённое соединение с GitHub.',
+        'Не удалось установить защищённое соединение с GitHub. Проверьте дату и время на устройстве.',
       );
     } on HttpException catch (e) {
-      throw GistException('Ошибка при чтении настроек: ${e.message}');
+      throw GistException(
+        'Не удалось прочитать настройки. Повторите позже. (${e.message})',
+      );
     } on FormatException {
-      throw GistException('GitHub ответил не так, как ожидалось.');
+      throw GistException(
+        'GitHub ответил не так, как ожидалось. Повторите позже.',
+      );
     }
 
     final files = json['files'];
-    if (files is! Map) throw GistException('В gist нет файлов.');
+    if (files is! Map) {
+      throw GistException(
+        'В gist нет настроек. Сообщите тому, кто ведёт серверы.',
+      );
+    }
     return GistSnapshot(
       config: await _content(files, 'c'),
       revocation: await _content(files, 'r'),
@@ -138,7 +148,7 @@ class GithubGistSource implements GistSource {
               .trim();
         }
       } on Exception {
-        throw GistException('Не удалось дочитать настройки.');
+        throw GistException('Не удалось дочитать настройки. Повторите позже.');
       }
     }
     final content = file['content'];

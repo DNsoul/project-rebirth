@@ -61,25 +61,31 @@ class HttpDownloader implements Downloader {
         if (response.statusCode != HttpStatus.ok) {
           await response.drain<void>();
           throw UpdateException(
-            'Сервер ответил ${response.statusCode}: файла по этому адресу нет.',
+            'Файл обновления не найден (ответ сервера ${response.statusCode}). Повторите позже.',
           );
         }
         await _save(response, file, limit, onProgress);
         return;
       }
-      throw UpdateException('Слишком много перенаправлений.');
+      throw UpdateException(
+        'Слишком много перенаправлений при скачивании. Повторите позже.',
+      );
     } on UpdateException {
       rethrow;
     } on TimeoutException {
-      throw UpdateException('Сервер не отвечает.');
+      throw UpdateException('Сервер обновления не отвечает. Повторите позже.');
     } on SocketException {
       throw UpdateException(
-        'Нет связи с сервером, откуда качается обновление.',
+        'Нет связи с сервером обновления. Проверьте интернет.',
       );
     } on HandshakeException {
-      throw UpdateException('Не удалось установить защищённое соединение.');
+      throw UpdateException(
+        'Не удалось установить защищённое соединение. Проверьте дату и время на устройстве.',
+      );
     } on HttpException catch (e) {
-      throw UpdateException('Ошибка при скачивании: ${e.message}');
+      throw UpdateException(
+        'Не удалось скачать обновление. Повторите позже. (${e.message})',
+      );
     }
   }
 
@@ -97,7 +103,7 @@ class HttpDownloader implements Downloader {
         received += chunk.length;
         if (received > limit) {
           throw UpdateException(
-            'Сервер отдаёт больше, чем объявлено ($limit байт). Скачивание остановлено.',
+            'Сервер отдаёт больше, чем объявлено ($limit байт). Скачивание остановлено, повторите позже.',
           );
         }
         sink.add(chunk);

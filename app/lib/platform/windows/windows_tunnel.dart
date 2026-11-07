@@ -90,10 +90,10 @@ class WindowsTunnelDriver implements TunnelDriver {
   Future<String?> preflight() async {
     if (!Platform.isWindows) return 'Это приложение работает только в Windows.';
     if (!File(_tunnelExe).existsSync() || !File(_awgExe).existsSync()) {
-      return 'Не найден AmneziaWG для Windows. Установи его (amnezia.org) и запусти приложение снова.';
+      return 'Не найден AmneziaWG для Windows. Установите его (github.com/amnezia-vpn/amneziawg-windows-client/releases) и запустите Rebirth снова.';
     }
     if (!await _isElevated()) {
-      return 'Приложение нужно запускать от имени администратора: иначе оно не сможет управлять туннелем.';
+      return 'Нужны права администратора. Закройте Rebirth и запустите его заново: Windows спросит разрешение.';
     }
     return null;
   }
@@ -124,7 +124,7 @@ class WindowsTunnelDriver implements TunnelDriver {
     if (r.exitCode != 0) {
       await _deleteConf(name);
       throw TunnelException(
-        'Не удалось запустить туннель (код ${r.exitCode}). ${_trim('${r.stderr}${r.stdout}')}',
+        'Не удалось запустить туннель. Повторите попытку. (Код ${r.exitCode}. ${_trim('${r.stderr}${r.stdout}')})',
       );
     }
     // The tunnel is started by hand when the app asks, never by the system: if
@@ -138,7 +138,9 @@ class WindowsTunnelDriver implements TunnelDriver {
       running: true,
       within: const Duration(seconds: 45),
     )) {
-      throw TunnelException('Туннель «$name» не запустился.');
+      throw TunnelException(
+        'Туннель не запустился. Повторите попытку; если так повторяется, перезагрузите компьютер.',
+      );
     }
     log?.call('tunnel $name is up');
   }

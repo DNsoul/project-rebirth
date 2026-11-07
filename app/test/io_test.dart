@@ -11,7 +11,7 @@ import 'package:awg_client/core/bootstrap.dart';
 import 'package:awg_client/core/dns_probe.dart';
 import 'package:awg_client/core/gist_source.dart';
 import 'package:awg_client/core/udp_enroll_transport.dart';
-import 'package:awg_client/ui/home_page.dart' show formatDuration, regionLabel;
+import 'package:awg_client/core/regions.dart' show regionLabel;
 import 'package:awg_proto/awg_proto.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -453,17 +453,7 @@ void main() {
     });
   });
 
-  group('words on the screen', () {
-    test('time in the connection', () {
-      expect(formatDuration(const Duration(seconds: 5)), '00:05');
-      expect(formatDuration(const Duration(minutes: 12, seconds: 7)), '12:07');
-      expect(
-        formatDuration(const Duration(hours: 3, minutes: 2, seconds: 1)),
-        '3:02:01',
-      );
-      expect(formatDuration(const Duration(seconds: -4)), '00:00');
-    });
-
+  group('place names', () {
     test('places', () {
       expect(regionLabel('sto'), 'Стокгольм');
       expect(regionLabel('waw'), 'Варшава');

@@ -226,12 +226,6 @@ void main() {
           await releaseOf(installerBytes, build: 12, minBuild: 5),
         );
         expect(updates.status!.offer.mandatory, isTrue);
-        updates.dismiss();
-        expect(
-          updates.status,
-          isNotNull,
-          reason: 'there is no "later" for this',
-        );
 
         final newer = make(build: 5);
         expect(newer.status!.offer.mandatory, isFalse);
@@ -239,19 +233,25 @@ void main() {
       },
     );
 
-    test('"later" hides it until something newer comes', () async {
-      await releases.announce(await releaseOf(installerBytes));
-      updates.dismiss();
-      expect(updates.status, isNull);
+    test(
+      'stays until installed, and a newer announcement replaces it',
+      () async {
+        await releases.announce(await releaseOf(installerBytes));
+        expect(updates.status?.offer.version, '1.2.0');
 
-      await releases.announce(await releaseOf(installerBytes));
-      expect(updates.status, isNull, reason: 'the same announcement again');
+        await releases.announce(await releaseOf(installerBytes));
+        expect(
+          updates.status?.offer.version,
+          '1.2.0',
+          reason: 'the same announcement again',
+        );
 
-      await releases.announce(
-        await releaseOf(installerBytes, build: 13, version: '1.3.0'),
-      );
-      expect(updates.status?.offer.version, '1.3.0');
-    });
+        await releases.announce(
+          await releaseOf(installerBytes, build: 13, version: '1.3.0'),
+        );
+        expect(updates.status?.offer.version, '1.3.0');
+      },
+    );
   });
 
   group('installing', () {

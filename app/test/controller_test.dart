@@ -318,7 +318,7 @@ void main() {
 
         expect(rig.status.phase, Phase.connected);
         expect(rig.status.region, 'sto');
-        expect(rig.status.note, contains('остаюсь на прежнем'));
+        expect(rig.status.note, contains('остаёмся на прежнем'));
         expect(rig.tunnels, ['awgr-a']);
         expect(rig.tunnel.carries('awgr-a'), isTrue);
       },
@@ -479,7 +479,7 @@ void main() {
       sto.refuse = enrollFull;
       await rig.controller.connect();
       expect(rig.status.phase, Phase.failed);
-      expect(rig.status.message, contains('столько устройств'));
+      expect(rig.status.message, contains('нет мест для новых устройств'));
       expect(rig.tunnels, isEmpty);
       expect(rig.dns.enabledFor, isNull);
     });
@@ -503,7 +503,7 @@ void main() {
       );
       await rig.controller.connect();
       expect(rig.status.phase, Phase.failed);
-      expect(rig.status.message, contains('старому образцу'));
+      expect(rig.status.message, contains('старой версии'));
       expect(rig.tunnels, isEmpty);
     });
 

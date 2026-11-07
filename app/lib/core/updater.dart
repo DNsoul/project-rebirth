@@ -95,10 +95,6 @@ abstract class UpdateView {
   /// Downloads the new version, checks it is the one that was announced, and
   /// starts its installer.
   Future<void> install();
-
-  /// Hides the offer until the next start of the program. Does nothing when the
-  /// update is mandatory.
-  void dismiss();
 }
 
 /// Turns announcements into an offer, and an accepted offer into a started
@@ -140,7 +136,6 @@ class UpdateController implements UpdateView {
   final _controller = StreamController<UpdateStatus?>.broadcast();
   late final StreamSubscription<Release> _sub;
   UpdateStatus? _status;
-  int _dismissedBuild = 0;
   bool _busy = false;
 
   @override
@@ -178,7 +173,7 @@ class UpdateController implements UpdateView {
       return; // a download in progress is not interrupted by a newer notice
     }
     final offer = _offer();
-    if (offer == null || (_dismissedBuild == offer.release.build)) {
+    if (offer == null) {
       _emit(null);
       return;
     }
@@ -189,16 +184,6 @@ class UpdateController implements UpdateView {
       return; // already showing what happened to this very offer
     }
     _emit(UpdateStatus(UpdatePhase.available, offer));
-  }
-
-  @override
-  void dismiss() {
-    final s = _status;
-    if (s == null || s.offer.mandatory || _busy) {
-      return;
-    }
-    _dismissedBuild = s.offer.release.build;
-    _emit(null);
   }
 
   @override
@@ -246,7 +231,7 @@ class UpdateController implements UpdateView {
       _fail(offer, e.message);
     } on Object catch (e) {
       _log('update: $e');
-      _fail(offer, 'Не удалось обновиться: $e');
+      _fail(offer, 'Не удалось обновиться. Повторите позже. ($e)');
     } finally {
       if (part != null) {
         await _quiet(part.delete);
@@ -279,15 +264,15 @@ class UpdateController implements UpdateView {
     final size = await file.length();
     if (size != asset.size) {
       throw UpdateException(
-        'Скачанный файл не тот, что объявлен: размер $size вместо ${asset.size}. '
-        'Установка отменена.',
+        'Скачанный файл не тот, что объявлен. Его размер $size байт вместо '
+        '${asset.size}, установка отменена. Повторите позже.',
       );
     }
     final hash = await sha256Hex(file.openRead());
     if (hash != asset.sha256) {
       throw UpdateException(
-        'Скачанный файл не прошёл проверку: его контрольная сумма не совпала '
-        'с подписанной. Установка отменена.',
+        'Скачанный файл не прошёл проверку. Его контрольная сумма не совпала '
+        'с подписанной, установка отменена. Повторите позже.',
       );
     }
   }

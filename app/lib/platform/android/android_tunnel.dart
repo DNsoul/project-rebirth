@@ -37,17 +37,17 @@ class AndroidTunnelDriver implements TunnelDriver {
       final v = native.version();
       log?.call('tunnel library: $v');
     } on Object catch (e) {
-      return 'Не загрузилась библиотека туннеля: $e';
+      return 'Не загрузилась библиотека туннеля. Переустановите Rebirth. ($e)';
     }
     final bool granted;
     try {
       granted = await bridge.prepare();
     } on Object catch (e) {
-      return 'Не удалось запросить разрешение на VPN: $e';
+      return 'Не удалось запросить разрешение на VPN. Повторите попытку. ($e)';
     }
     return granted
         ? null
-        : 'Нужно разрешить приложению VPN-подключение: без этого оно не может работать.';
+        : 'Нужно разрешение на VPN. Нажмите кнопку ещё раз и согласитесь в окне Android.';
   }
 
   @override
@@ -71,7 +71,9 @@ class AndroidTunnelDriver implements TunnelDriver {
         mtu: plan.mtu,
       );
     } on Object catch (e) {
-      throw TunnelException('Система не открыла VPN-интерфейс: $e');
+      throw TunnelException(
+        'Android не открыл VPN-интерфейс. Повторите; если не помогает, отключите другие VPN. ($e)',
+      );
     }
 
     final handle = native.turnOn(conf, fd);
@@ -80,7 +82,7 @@ class AndroidTunnelDriver implements TunnelDriver {
       // service is left to let go of.
       if (_handles.isEmpty) await bridge.release();
       throw TunnelException(
-        'Не удалось запустить туннель: ${native.lastError()}',
+        'Не удалось запустить туннель. Повторите попытку. (${native.lastError()})',
       );
     }
     _handles[name] = handle;
