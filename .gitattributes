@@ -1,0 +1,17 @@
+# Text is stored with LF in the repository.
+* text=auto eol=lf
+
+# Windows scripts and the installer script are read by Windows tools (PowerShell 5.1
+# needs the byte order mark these files start with, and likes CRLF); they are
+# checked out with CRLF everywhere.
+*.ps1 text eol=crlf
+*.iss text eol=crlf
+
+# Never touched.
+*.png binary
+*.ico binary
+*.jks binary
+*.so binary
+*.dll binary
+*.exe binary
+*.apk binary

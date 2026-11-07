@@ -1,0 +1,124 @@
+{
+  "note": "Контрольные векторы для spec/format.md. Реализация на Dart обязана воспроизводить signed_bytes_hex и sig в точности. Сгенерировано go test ./internal/proto -update.",
+  "keys": {
+    "root_seed": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+    "root_pub": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w",
+    "backup_seed": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+    "backup_pub": "gTl3Dqh9F19Wo1Rmw0x-zMuNipG07jeiXfYPW4_Js5Q",
+    "server_seed": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+    "server_pub": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY_k2NsFGFKyHN9E",
+    "content_key": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ"
+  },
+  "cases": [
+    {
+      "name": "cert",
+      "document": {
+        "epoch": 3,
+        "nbf": 1762400000,
+        "exp": 1767584000,
+        "pub": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY_k2NsFGFKyHN9E",
+        "by": "root",
+        "sig": "lcP6oS_9poWzvOyxslxoYJln-MVkX7ysgB0hDHgNDdrQVtricrxahIG1tHTzGeDgvzaVHAFu2IXS30HssLI1DQ"
+      },
+      "signed_bytes_hex": "6177672d726f7461746f722f636572742f7631000000000300000000690c170000000000695b310000000020ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d100000004726f6f74",
+      "sig": "lcP6oS_9poWzvOyxslxoYJln-MVkX7ysgB0hDHgNDdrQVtricrxahIG1tHTzGeDgvzaVHAFu2IXS30HssLI1DQ"
+    },
+    {
+      "name": "config",
+      "document": {
+        "v": 1,
+        "kind": "config",
+        "seq": 7,
+        "iat": 1762400000,
+        "exp": 1767584000,
+        "cert": {
+          "epoch": 3,
+          "nbf": 1762400000,
+          "exp": 1767584000,
+          "pub": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY_k2NsFGFKyHN9E",
+          "by": "root",
+          "sig": "lcP6oS_9poWzvOyxslxoYJln-MVkX7ysgB0hDHgNDdrQVtricrxahIG1tHTzGeDgvzaVHAFu2IXS30HssLI1DQ"
+        },
+        "body": "{\"endpoint\":\"203.0.113.9:51820\",\"region\":\"sto\"}",
+        "sig": "yDzJ0gbNGfTpc4XyncpuUp69uBP6LD1Q0GL-z4I5FeM6R7tYLEPXYCYVx0gb15K5Z6WtKxgYXQArqYKN0OfqCA"
+      },
+      "signed_bytes_hex": "6177672d726f7461746f722f646f632f76310000000006636f6e666967000000000000000700000000690c170000000000695b310000000020ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d10000002f7b22656e64706f696e74223a223230332e302e3131332e393a3531383230222c22726567696f6e223a2273746f227d",
+      "sig": "yDzJ0gbNGfTpc4XyncpuUp69uBP6LD1Q0GL-z4I5FeM6R7tYLEPXYCYVx0gb15K5Z6WtKxgYXQArqYKN0OfqCA"
+    },
+    {
+      "name": "revocation",
+      "document": {
+        "v": 1,
+        "min_epoch": 4,
+        "iat": 1762400000,
+        "by": "backup",
+        "sig": "OmUJ0oia-h2JKuobqYx77SioPqzPTuaW59Xl50nIap9DhlvthT3TVvXxyNEtgOZtxf_trBFo-GvzZBBpfmmjCA"
+      },
+      "signed_bytes_hex": "6177672d726f7461746f722f7265766f6b652f7631000000000400000000690c1700000000066261636b7570",
+      "sig": "OmUJ0oia-h2JKuobqYx77SioPqzPTuaW59Xl50nIap9DhlvthT3TVvXxyNEtgOZtxf_trBFo-GvzZBBpfmmjCA"
+    },
+    {
+      "name": "command",
+      "document": {
+        "v": 1,
+        "id": "BgYGBgYGBgYGBgYGBgYGBg",
+        "iat": 1762400000,
+        "action": "move_region",
+        "arg": "waw",
+        "by": "root",
+        "sig": "KhG-qI5TjgeIQboM46gl0VEmFAXXXRHFcQlzFq61bV3F8uw0lqOMhNHfCwWWGsH790NeytNsJAftjJqhnEq7AA"
+      },
+      "signed_bytes_hex": "6177672d726f7461746f722f636f6d6d616e642f763100000000100606060606060606060606060606060600000000690c17000000000b6d6f76655f726567696f6e0000000377617700000004726f6f74",
+      "sig": "KhG-qI5TjgeIQboM46gl0VEmFAXXXRHFcQlzFq61bV3F8uw0lqOMhNHfCwWWGsH790NeytNsJAftjJqhnEq7AA"
+    },
+    {
+      "name": "release",
+      "document": {
+        "v": 1,
+        "version": "1.2.0",
+        "build": 12,
+        "min_build": 3,
+        "iat": 1762400000,
+        "notes": "Новая версия: быстрее подключается.",
+        "assets": [
+          {
+            "os": "windows",
+            "url": "https://example.org/releases/Rebirth-Setup-1.2.0.exe",
+            "sha256": "abababababababababababababababababababababababababababababababab",
+            "size": 28311552
+          },
+          {
+            "os": "android",
+            "url": "https://example.org/releases/Rebirth-1.2.0.apk",
+            "sha256": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+            "size": 19004416
+          }
+        ],
+        "by": "root",
+        "sig": "UQrzj6fkHHWBy0Kiqshf0f4-w2Guj369JIt2qoNyjIK3-btDM_VLAAWk2d77SUUd-RXhObiLTQFKG8p_GSzlDQ"
+      },
+      "signed_bytes_hex": "6177672d726f7461746f722f72656c656173652f76310000000005312e322e300000000c0000000300000000690c170000000041d09dd0bed0b2d0b0d18f20d0b2d0b5d180d181d0b8d18f3a20d0b1d18bd181d182d180d0b5d0b520d0bfd0bed0b4d0bad0bbd18ed187d0b0d0b5d182d181d18f2e000000020000000777696e646f77730000003468747470733a2f2f6578616d706c652e6f72672f72656c65617365732f526562697274682d53657475702d312e322e302e65786500000040616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261620000000001b0000000000007616e64726f69640000002e68747470733a2f2f6578616d706c652e6f72672f72656c65617365732f526562697274682d312e322e302e61706b0000004063646364636463646364636463646364636463646364636463646364636463646364636463646364636463646364636463646364636463646364636463646364000000000121fc0000000004726f6f74",
+      "sig": "UQrzj6fkHHWBy0Kiqshf0f4-w2Guj369JIt2qoNyjIK3-btDM_VLAAWk2d77SUUd-RXhObiLTQFKG8p_GSzlDQ"
+    }
+  ],
+  "envelope": {
+    "nonce": "BQUFBQUFBQUFBQUF",
+    "plaintext_b64": "eyJoZWxsbyI6ItC80LjRgCJ9",
+    "blob": "BQUFBQUFBQUFBQUFvhsZjMWLxVbu9dk2amqTt1Kofs7OyK3_pJ8tFDxV8SN6bQ"
+  },
+  "enroll": {
+    "now": 1762400000,
+    "device_id": "BwcHBwcHBwcHBwcHBwcHBw",
+    "public_key": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+    "request_nonce": "CQkJCQkJCQkJCQkJCQkJCQ",
+    "name": "windows",
+    "address": "10.8.0.7/32",
+    "envelope_nonce": "BQUFBQUFBQUFBQUF",
+    "request_plain": "{\"v\":1,\"kind\":\"enroll\",\"id\":\"BwcHBwcHBwcHBwcHBwcHBw\",\"pub\":\"CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg\",\"nonce\":\"CQkJCQkJCQkJCQkJCQkJCQ\",\"iat\":1762400000,\"name\":\"windows\"}",
+    "request_blob": "BQUFBQUFBQUFBQUFvhsHy5PWhla_vmfumOhgUh6nAgcKW8vU6VnkvHEp7MAbx-TeUrUpiaYCoONri_9IVOKXWJ-3WV23wFWqj32SpOMeW324iJrpJ1XoYg68tGEpvIAXyoUqJCM-BEymQwcMdWZkCdJFUX-jwa143_fLGGBFMy1_zjDA92XCuHoDr8oSz6gioIZ7ytPJKt59vmaw8NGZ5dLMF8lSLWXlVvElUH-IKGLXlHbcQ7bCUPDJj4Yk8FzklsVjh6C3Exo",
+    "reply_plain": "{\"v\":1,\"kind\":\"enrolled\",\"nonce\":\"CQkJCQkJCQkJCQkJCQkJCQ\",\"address\":\"10.8.0.7/32\",\"iat\":1762400000}",
+    "reply_blob": "BQUFBQUFBQUFBQUFvhsHy5PWhla_vmfumOhgUh6nAgcKHIPUrB-o6T0I_oFpp9Dscb0du4UKlNFIg8t6d-qjK9jfann3zk3pqFiHiNMsHg7Z-M2OXDq_BXrS4BpI0cU36LBvV1FIVTfRMlB1Bhd-k9N4qCzrrKqvp9mptX9leA",
+    "refused_plain": "{\"v\":1,\"kind\":\"enrolled\",\"nonce\":\"CQkJCQkJCQkJCQkJCQkJCQ\",\"error\":\"full\",\"iat\":1762400000}",
+    "refused_blob": "BQUFBQUFBQUFBQUFvhsHy5PWhla_vmfumOhgUh6nAgcKHIPUrB-o6T0I_oFpp9Dscb0du4UKlNFIg8t6d-qjK9jfann3zk3tvk6an4JlHlKOpZGCSDbmSjnf6Rldy9VqufR9XVACQTVjUeP5RZLmFcA-R4rxPw"
+  }
+}

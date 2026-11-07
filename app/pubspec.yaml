@@ -1,0 +1,34 @@
+name: awg_client
+description: "One-button VPN client for the awg-rotator fleet"
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # The wire formats, held to the vectors in spec/.
+  awg_proto:
+    path: packages/awg_proto
+  ffi: ^2.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    # What the app is built with: where to read the configuration and the keys
+    # to verify it with. Made by "awgctl trust -o app/assets/bootstrap.json"; it
+    # is access, so it is not kept in the repository.
+    - assets/bootstrap.json
+
+    # The notification-area icons, one per state; drawn by scripts/make-icons.ps1.
+    - assets/tray/

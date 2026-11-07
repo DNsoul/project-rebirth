@@ -1,0 +1,19 @@
+secrets.env
+state/
+dist/
+*.key
+*.enc
+*.conf
+
+app/assets/bootstrap.json
+app/build/
+app/.dart_tool/
+app/packages/*/.dart_tool/
+app/windows/flutter/ephemeral/
+
+# Logs of measurements made by awgwatch: addresses of past servers.
+*-watch.jsonl
+
+# Built by scripts/build-android-lib.ps1 from go/cmd/awglib; a binary in the repository
+# cannot be reviewed, and the script rebuilds it.
+app/android/app/src/main/jniLibs/

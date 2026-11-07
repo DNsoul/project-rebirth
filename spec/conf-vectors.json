@@ -1,0 +1,21 @@
+{
+  "note": "Контрольные векторы клиентского конфига для spec/format.md. Реализация на Dart обязана из того же тела получить тот же текст до байта. Сгенерировано go test ./internal/fleet -update.",
+  "cases": [
+    {
+      "name": "split, every option",
+      "body": "{\"version\":2,\"region\":\"sto\",\"endpoint\":\"203.0.113.9:41820\",\"created_at\":1762400000,\"server_public_key\":\"ERERERERERERERERERERERERERERERERERERERERERE=\",\"params\":{\"jc\":4,\"jmin\":40,\"jmax\":120,\"s1\":20,\"s2\":25,\"s3\":30,\"s4\":35,\"header_protection_key\":\"EhISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhI=\",\"random_trailers\":true,\"i1\":\"\\u003cr 16\\u003e\"},\"subnet\":\"10.8.0.0/24\",\"dns\":[\"198.18.0.1\"],\"mtu\":1280,\"allowed_ips\":[\"198.18.0.0/15\",\"91.108.4.0/22\",\"149.154.160.0/20\"],\"enroll\":{\"private_key\":\"ExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExM=\",\"address\":\"10.8.0.251/32\",\"server\":\"10.8.0.1:7843\"}}",
+      "private_key": "ISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhISE=",
+      "public_key": "fTSkgV+muYJTXmCvO9m0lVaBYIDxZB/4HSt8iugmikQ=",
+      "address": "10.8.0.7/32",
+      "conf": "[Interface]\nPrivateKey = ISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhISE=\nAddress = 10.8.0.7/32\nDNS = 198.18.0.1\nMTU = 1280\nJc = 4\nJmin = 40\nJmax = 120\nS1 = 20\nS2 = 25\nS3 = 30\nS4 = 35\nHeaderProtectionKey = EhISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhI=\nRandomTrailers = 1\nI1 = \u003cr 16\u003e\n\n[Peer]\nPublicKey = ERERERERERERERERERERERERERERERERERERERERERE=\nAllowedIPs = 198.18.0.0/15, 91.108.4.0/22, 149.154.160.0/20\nEndpoint = 203.0.113.9:41820\nPersistentKeepalive = 25\n"
+    },
+    {
+      "name": "full tunnel, nothing optional",
+      "body": "{\"version\":2,\"region\":\"waw\",\"endpoint\":\"198.51.100.7:51820\",\"created_at\":1762400000,\"server_public_key\":\"FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQ=\",\"params\":{\"jc\":3,\"jmin\":50,\"jmax\":500,\"s1\":12,\"s2\":12,\"s3\":12,\"s4\":12,\"header_protection_key\":\"\",\"random_trailers\":false,\"i1\":\"\"},\"subnet\":\"10.8.0.0/24\",\"dns\":[\"1.1.1.1\",\"9.9.9.9\"],\"mtu\":1280,\"allowed_ips\":[\"0.0.0.0/0\"],\"enroll\":{\"private_key\":\"FRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRU=\",\"address\":\"10.8.0.251/32\",\"server\":\"10.8.0.1:7843\"}}",
+      "private_key": "ISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhISE=",
+      "public_key": "fTSkgV+muYJTXmCvO9m0lVaBYIDxZB/4HSt8iugmikQ=",
+      "address": "10.8.0.30/32",
+      "conf": "[Interface]\nPrivateKey = ISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhISE=\nAddress = 10.8.0.30/32\nDNS = 1.1.1.1, 9.9.9.9\nMTU = 1280\nJc = 3\nJmin = 50\nJmax = 500\nS1 = 12\nS2 = 12\nS3 = 12\nS4 = 12\nRandomTrailers = 0\n\n[Peer]\nPublicKey = FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQ=\nAllowedIPs = 0.0.0.0/0\nEndpoint = 198.51.100.7:51820\nPersistentKeepalive = 25\n"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What the file provider may hand to the system's installer: the downloaded
+     update, kept in the app's private files under "updates". Nothing else. -->
+<paths>
+    <files-path name="updates" path="updates/" />
+</paths>
