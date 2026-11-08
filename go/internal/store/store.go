@@ -50,16 +50,47 @@ type Server struct {
 	CreatedAt int64  `json:"created_at,omitempty"`
 }
 
-// Mirror is another place the installers of a release are kept, besides GitHub.
-// Nothing about it is secret: it is a public project, and the apps are told where
-// it is by the bootstrap data they are built with. An installer is only ever
-// installed if its size and hash are the signed ones, so the place needs no trust.
+// Mirror is another place the project keeps things besides GitHub: the
+// installers of a release, and the same signed files that are in the gist. The
+// place itself is a public project and nothing about it is secret: the apps are
+// told where it is by the bootstrap data they are built with. An installer is
+// only installed if its size and hash are the signed ones, and a file is only
+// used if it verifies, so the place needs no trust.
+//
+// The one secret here is DeployToken, which servers use to write the files.
 type Mirror struct {
 	Kind      string `json:"kind"`       // "gitlab"
 	Base      string `json:"base"`       // https://gitlab.com
 	ProjectID int64  `json:"project_id"` // the numeric id, which survives a rename
 	Path      string `json:"path"`       // owner/name, for people
 	Package   string `json:"package"`    // the generic package the installers go under
+
+	// SyncPackage is the package the signed files of the configuration are kept
+	// under (gitlab.DefaultSyncPackage when empty).
+	SyncPackage string `json:"sync_package,omitempty"`
+
+	// DeployToken is a token of the project that can only read and write its
+	// packages. Servers are given it, so that they can write to this place as
+	// they write to the gist.
+	DeployToken string `json:"deploy_token,omitempty"`
+}
+
+// SyncPkg is the package the signed files are kept under.
+func (m Mirror) SyncPkg() string {
+	if m.SyncPackage != "" {
+		return m.SyncPackage
+	}
+	return gitlab.DefaultSyncPackage
+}
+
+// GitLabMirror returns the GitLab mirror, if there is one.
+func (s *State) GitLabMirror() (Mirror, bool) {
+	for _, m := range s.Mirrors {
+		if m.Kind == KindGitLab {
+			return m, true
+		}
+	}
+	return Mirror{}, false
 }
 
 // KindGitLab is the one kind of mirror there is so far.
@@ -92,10 +123,21 @@ type State struct {
 	Mirrors []Mirror `json:"mirrors,omitempty"`
 }
 
-// SetMirror adds a mirror, or replaces the one of the same kind.
+// SetMirror adds a mirror, or replaces the one of the same kind. What was set
+// up for the same project before (the sync package and the servers' token) is
+// kept unless the new one says otherwise.
 func (s *State) SetMirror(m Mirror) {
 	for i := range s.Mirrors {
 		if s.Mirrors[i].Kind == m.Kind {
+			old := s.Mirrors[i]
+			if old.ProjectID == m.ProjectID && old.Base == m.Base {
+				if m.SyncPackage == "" {
+					m.SyncPackage = old.SyncPackage
+				}
+				if m.DeployToken == "" {
+					m.DeployToken = old.DeployToken
+				}
+			}
 			s.Mirrors[i] = m
 			return
 		}
@@ -111,6 +153,18 @@ func (s *State) ReleaseMirrors() []string {
 	for _, m := range s.Mirrors {
 		if m.Kind == KindGitLab {
 			out = append(out, gitlab.PackageTemplate(m.Base, m.ProjectID, m.Package))
+		}
+	}
+	return out
+}
+
+// ConfigMirrors are the addresses of the mirrors' copies of the signed files as
+// the apps are built to know them: `{file}` is filled in by the app.
+func (s *State) ConfigMirrors() []string {
+	var out []string
+	for _, m := range s.Mirrors {
+		if m.Kind == KindGitLab {
+			out = append(out, gitlab.SyncTemplate(m.Base, m.ProjectID, m.SyncPkg()))
 		}
 	}
 	return out

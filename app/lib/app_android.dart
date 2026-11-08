@@ -77,7 +77,7 @@ Future<void> runAndroid(List<String> args) async {
 
   final controller = ConnectionController(
     bootstrap: bootstrap,
-    gist: GithubGistSource(bootstrap.gistId),
+    gist: gistSourceFor(bootstrap),
     store: FileStateStore('$dataDir/state.json'),
     tunnel: AndroidTunnelDriver(native: native, bridge: bridge, log: log),
     dns: AndroidDnsGuard(),

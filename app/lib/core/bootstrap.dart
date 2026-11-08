@@ -16,6 +16,7 @@ class Bootstrap {
     required this.contentKey,
     this.gistOwner = '',
     this.releaseMirrors = const [],
+    this.configMirrors = const [],
   });
 
   factory Bootstrap.fromJson(Map<String, Object?> j) {
@@ -31,17 +32,18 @@ class Bootstrap {
       rootPub: field('root_pub'),
       backupPub: field('backup_pub'),
       contentKey: decode(field('content_key'), contentKeySize),
-      releaseMirrors: _mirrors(j['release_mirrors']),
+      releaseMirrors: _mirrors(j['release_mirrors'], 'release_mirrors'),
+      configMirrors: _mirrors(j['config_mirrors'], 'config_mirrors'),
     );
   }
 
   /// The templates of the addresses of the installers' copies, checked: this is
   /// data the build was made with, so a mistake in it is a mistake of the build and
   /// is refused loudly instead of being quietly ignored.
-  static List<String> _mirrors(Object? raw) {
+  static List<String> _mirrors(Object? raw, String key) {
     if (raw == null) return const [];
     if (raw is! List) {
-      throw ProtoException('the bundled "release_mirrors" is not a list');
+      throw ProtoException('the bundled "$key" is not a list');
     }
     final out = <String>[];
     for (final item in raw) {
@@ -58,7 +60,7 @@ class Bootstrap {
           uri.host.isEmpty ||
           !item.contains('{file}')) {
         throw ProtoException(
-          'the bundled "release_mirrors" has an entry that is not an https '
+          'the bundled "$key" has an entry that is not an https '
           'address with {file} in it: "$item"',
         );
       }
@@ -93,6 +95,13 @@ class Bootstrap {
   /// trust. They are here, in what the build is made with, and not in the
   /// announcement, so that they cost the announcement and the older apps nothing.
   final List<String> releaseMirrors;
+
+  /// Other places the same signed files as in the gist are kept, as templates of
+  /// their addresses with `{file}` for the name of the file (`c`, `r` or `u`).
+  /// They are equals of the gist, not copies of it: the app reads all of them
+  /// and takes whichever has the newest version of each file. What is in them is
+  /// encrypted and signed like what is in the gist, so they need no trust.
+  final List<String> configMirrors;
 
   final String rootPub;
   final String backupPub;

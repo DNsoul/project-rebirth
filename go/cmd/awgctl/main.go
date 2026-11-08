@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -82,7 +81,8 @@ func usage() {
   command         приказать серверу: move | move-region <регион> | status | revoke <N>
   events          показать, что сервер сообщает о себе
   release         объявить новую версию приложений: publish | show
-  mirror          запасное место для установщиков (GitLab): set gitlab -project владелец/имя | show
+  mirror          второе место (GitLab) для установщиков и файлов конфигурации:
+                  set gitlab -project владелец/имя | token | sync | show
   sync            узнать, какой сервер сейчас текущий (после самостоятельного переезда)
   gc              найти и удалить лишние серверы, которые никому не нужны
   auto            включить или выключить самостоятельные переезды (-age, -block)
@@ -253,47 +253,25 @@ func cmdStatus(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
-	fmt.Printf("\nGist %s\n", st.GistID)
-	reportGist(ctx, secrets.GitHubToken, st)
+	fmt.Printf("\nГде лежат файлы (gist %s)\n", st.GistID)
+	reportPlaces(ctx, secrets, st)
 
 	fmt.Println("\nVultr")
 	reportVultr(ctx, secrets.VultrAPIKey, st)
 	return nil
 }
 
-func reportGist(ctx context.Context, token string, st *store.State) {
+func reportPlaces(ctx context.Context, secrets config.Secrets, st *store.State) {
 	if st.GistID == "" {
-		fmt.Println("  не создан")
+		fmt.Println("  не создано")
 		return
 	}
-	files, err := gist.New(token).Get(ctx, st.GistID)
+	where, err := openPlaces(st, secrets)
 	if err != nil {
-		fmt.Printf("  недоступен: %v\n", err)
+		fmt.Printf("  %v\n", err)
 		return
 	}
-	contentKey, err := st.ContentKey()
-	if err != nil {
-		fmt.Printf("  ключ содержимого испорчен: %v\n", err)
-		return
-	}
-
-	names := make([]string, 0, len(files))
-	for name := range files {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	for _, name := range names {
-		plain, err := proto.Open(contentKey, files[name])
-		switch {
-		case err != nil:
-			fmt.Printf("  %-2s не расшифровывается: %v\n", name, err)
-		case string(plain) == "{}":
-			fmt.Printf("  %-2s пусто\n", name)
-		default:
-			fmt.Printf("  %-2s %d байт\n", name, len(plain))
-		}
-	}
+	fmt.Print(describePlaces(ctx, where))
 }
 
 func reportVultr(ctx context.Context, key string, st *store.State) {

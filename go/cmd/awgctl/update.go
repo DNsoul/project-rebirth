@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -112,6 +113,9 @@ func cmdUpdate(args []string) error {
 		if err := cli.Upload(lifecycle.ManagerUnitPath, "0644", []byte(lifecycle.ManagerUnit())); err != nil {
 			return err
 		}
+		if err := refreshManagerConfig(cli, st, logf); err != nil {
+			return err
+		}
 	}
 
 	// The status file is how a restart is told from the old process still
@@ -138,6 +142,39 @@ func cmdUpdate(args []string) error {
 		if err := deploy.VerifySplit(cli, &cfg, status, logf); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// refreshManagerConfig makes the manager's configuration on the server name the
+// same second place as the operator's state does, which is how a server that is
+// already running starts writing to it without having to be replaced. The
+// manager is restarted by the caller afterwards.
+func refreshManagerConfig(cli *remote.Client, st *store.State, logf func(string, ...any)) error {
+	raw, err := cli.Run("cat " + lifecycle.DefaultConfigPath)
+	if err != nil {
+		return fmt.Errorf("настройки менеджера не читаются: %w", err)
+	}
+	cfg, err := lifecycle.ParseConfig([]byte(raw))
+	if err != nil {
+		return err
+	}
+	want := gitLabSyncFor(st)
+	if reflect.DeepEqual(cfg.GitLab, want) {
+		return nil
+	}
+	cfg.GitLab = want
+	data, err := cfg.Marshal()
+	if err != nil {
+		return err
+	}
+	if err := cli.Upload(lifecycle.DefaultConfigPath, "0600", data); err != nil {
+		return err
+	}
+	if want == nil {
+		logf("  второе место убрано из настроек менеджера")
+	} else {
+		logf("  менеджер получил второе место (GitLab) и будет писать и туда")
 	}
 	return nil
 }

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -150,6 +151,10 @@ type Config struct {
 	GitHubToken string `json:"github_token"`
 	GistID      string `json:"gist_id"`
 
+	// GitLab is the second place everything is published to, equal to the gist
+	// and not behind it. Without it only the gist is used.
+	GitLab *GitLabSync `json:"gitlab,omitempty"`
+
 	// ServerSeed is the key this line of servers signs with, and Cert is the
 	// certificate the operator's root key issued for it. A server cannot make
 	// its own certificate, so every replacement inherits this one.
@@ -176,6 +181,31 @@ type Config struct {
 
 	// DataDir overrides DefaultDataDir.
 	DataDir string `json:"data_dir,omitempty"`
+}
+
+// GitLabSync says where the second place is and how to write to it. The token
+// is a deploy token of the project: it can read and write that project's package
+// registry and reaches nothing else, which is what makes it fit to be left on a
+// server that is replaced every few weeks.
+type GitLabSync struct {
+	Base    string `json:"base"`
+	Project int64  `json:"project"`
+	Package string `json:"package"`
+	Token   string `json:"token"`
+}
+
+func (g *GitLabSync) validate() error {
+	switch {
+	case !strings.HasPrefix(g.Base, "https://"):
+		return fmt.Errorf("gitlab: the address %q is not an https one", g.Base)
+	case g.Project <= 0:
+		return errors.New("gitlab: no project id")
+	case g.Package == "":
+		return errors.New("gitlab: no package name")
+	case g.Token == "":
+		return errors.New("gitlab: no token")
+	}
+	return nil
 }
 
 // Validate checks that the configuration is complete and consistent.
@@ -218,6 +248,11 @@ func (c *Config) Validate() error {
 	}
 	if _, err := ssh.ParsePrivateKey([]byte(c.SSHPrivate)); err != nil {
 		return fmt.Errorf("ssh key: %w", err)
+	}
+	if c.GitLab != nil {
+		if err := c.GitLab.validate(); err != nil {
+			return err
+		}
 	}
 	return c.Policy.Normalize()
 }

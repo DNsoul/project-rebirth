@@ -574,7 +574,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     token.check();
 
     if (snapshot != null) {
-      final accepted = await _accept(snapshot, state);
+      final accepted = await _acceptAll(snapshot, state);
       if (accepted != null) {
         return accepted;
       }
@@ -595,11 +595,65 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     );
   }
 
-  /// Verifies what was read and, if it holds up, makes it the current one.
-  Future<ConfigBody?> _accept(
+  /// Verifies everything that was read, from every place the files are kept in,
+  /// and makes the newest of it the current one. Which place had the newest does
+  /// not matter, nor the order they are looked at in: a version older than one
+  /// already accepted is refused by the checks that stop a replay, so whatever
+  /// is newest is what is left.
+  Future<ConfigBody?> _acceptAll(
     GistSnapshot snapshot,
     PersistedState state,
   ) async {
+    final all = [snapshot, ...snapshot.others];
+
+    // Every revocation first, from every place: one that is only in one of them
+    // can still make the configuration in another unacceptable, so it has to be
+    // known before any configuration is looked at.
+    for (final one in all) {
+      final r = one.revocation;
+      if (r == null || r.isEmpty) {
+        continue;
+      }
+      try {
+        final (_, next) = await bootstrap.trust.openRevocation(
+          r,
+          _now(),
+          state.proto,
+        );
+        state.proto = next;
+        _log(
+          'revocation: certificates below epoch ${next.minEpoch} are no longer accepted',
+        );
+      } on ProtoException {
+        // The empty placeholder, one already applied, or something forged.
+      }
+    }
+
+    var any = false;
+    for (final one in all) {
+      // With several places, one that is behind is the normal case, not
+      // something to write down at every look.
+      final body = await _accept(one, state, quietWhenOld: all.length > 1);
+      any = any || body != null;
+    }
+    final current = state.configBody;
+    if (!any || current == null) {
+      return null;
+    }
+    // Remembered only once a configuration has been accepted, so that one that
+    // fails its checks is read again next time instead of being taken for
+    // unchanged.
+    state.etag = snapshot.etag;
+    await store.save(state);
+    return ConfigBody.parse(current);
+  }
+
+  /// Verifies what was read and, if it holds up, makes it the current one.
+  Future<ConfigBody?> _accept(
+    GistSnapshot snapshot,
+    PersistedState state, {
+    bool quietWhenOld = false,
+  }) async {
     final trust = bootstrap.trust;
     var proto = state.proto;
 
@@ -632,10 +686,11 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         state
           ..proto = proto.copyWith(lastSeq: max(proto.lastSeq, doc.seq))
           ..configBody = doc.body
-          ..configEpoch = doc.cert.epoch
-          ..etag = snapshot.etag;
+          ..configEpoch = doc.cert.epoch;
       } on ProtoException catch (e) {
-        _log('the published configuration was refused: ${e.message}');
+        if (!quietWhenOld || !e.message.contains('is not newer')) {
+          _log('the published configuration was refused: ${e.message}');
+        }
       }
     }
     if (body == null) {
@@ -654,7 +709,9 @@ class ConnectionController implements ConnectionView, ReleaseSource {
           ..releaseBlob = u;
         _setRelease(rel);
       } on ProtoException catch (e) {
-        _log('the announced version was refused: ${e.message}');
+        if (!quietWhenOld || !e.message.contains('is older than')) {
+          _log('the announced version was refused: ${e.message}');
+        }
       }
     }
     await store.save(state);
@@ -709,7 +766,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     try {
       final snapshot = await gist.fetch(etag: state.etag);
       if (snapshot != null) {
-        await _accept(snapshot, state);
+        await _acceptAll(snapshot, state);
       }
     } on GistException catch (e) {
       _log('update check: ${e.message}');

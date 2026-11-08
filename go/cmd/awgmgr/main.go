@@ -18,9 +18,9 @@ import (
 	"syscall"
 	"time"
 
-	"awgrotator/internal/gist"
 	"awgrotator/internal/globalping"
 	"awgrotator/internal/lifecycle"
+	"awgrotator/internal/stores"
 	"awgrotator/internal/vultr"
 )
 
@@ -56,7 +56,19 @@ func run(log *slog.Logger, configPath string, tickEvery time.Duration) error {
 	vc := vultr.New(cfg.VultrKey)
 	cloud := &lifecycle.VultrCloud{Client: vc, Tag: cfg.Tag}
 	host := &lifecycle.SystemHost{Cfg: cfg}
-	pub := &lifecycle.GistPublisher{Cfg: cfg, Gist: gist.New(cfg.GitHubToken), J: journal}
+	// The gist and, when this server has been given one, the GitLab package are
+	// equal places: everything is written to both, and whichever is behind is
+	// caught up from the other.
+	var gl *stores.GitLabAccess
+	if g := cfg.GitLab; g != nil {
+		gl = &stores.GitLabAccess{Base: g.Base, Project: g.Project, Package: g.Package, Token: g.Token, Deploy: true}
+	}
+	pub := &lifecycle.StorePublisher{
+		Cfg:    cfg,
+		Stores: stores.NewSet(cfg.Trust(), cfg.GitHubToken, cfg.GistID, gl),
+		J:      journal,
+		Log:    log,
+	}
 
 	progress := func(format string, args ...any) { log.Info(fmt.Sprintf(format, args...)) }
 	engine := &lifecycle.Engine{

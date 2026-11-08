@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"awgrotator/internal/config"
-	"awgrotator/internal/gist"
 	"awgrotator/internal/proto"
 	"awgrotator/internal/store"
 )
@@ -108,10 +107,10 @@ func readPubspecVersion(path string) (version string, build uint32, err error) {
 	return "", 0, fmt.Errorf("%s: нет строки вида «version: 1.2.3+4»", path)
 }
 
-// releaseGist is the part of the gist client the release commands use.
+// releaseGist is the part of the places the release commands use.
 type releaseGist interface {
-	Get(ctx context.Context, id string) (map[string]string, error)
-	Update(ctx context.Context, id string, files map[string]string) error
+	Read(ctx context.Context, names ...string) (map[string]string, error)
+	Write(ctx context.Context, files map[string]string) error
 }
 
 // currentRelease is the announcement that is published now, or nil if there is
@@ -129,7 +128,7 @@ func currentRelease(files map[string]string, trust proto.Trust) *proto.Release {
 }
 
 // publishRelease signs the announcement with the root key and puts it in the
-// gist. It returns the one it replaced, if there was one.
+// places. It returns the one it replaced, if there was one.
 //
 // A build number lower than the published one is refused. Every app that has
 // seen the higher one remembers it and would throw this one away, so it would
@@ -140,7 +139,7 @@ func publishRelease(ctx context.Context, g releaseGist, st *store.State, rel *pr
 	if err != nil {
 		return nil, err
 	}
-	files, err := g.Get(ctx, st.GistID)
+	files, err := g.Read(ctx, proto.FileRelease)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +162,7 @@ func publishRelease(ctx context.Context, g releaseGist, st *store.State, rel *pr
 	if err != nil {
 		return replaced, err
 	}
-	if err := g.Update(ctx, st.GistID, map[string]string{proto.FileRelease: blob}); err != nil {
+	if err := g.Write(ctx, map[string]string{proto.FileRelease: blob}); err != nil {
 		return replaced, err
 	}
 	return replaced, nil
@@ -295,7 +294,11 @@ func cmdReleasePublish(args []string) error {
 		}
 	}
 
-	replaced, err := publishRelease(ctx, gist.New(secrets.GitHubToken), st, rel, *force)
+	where, err := openPlaces(st, secrets)
+	if err != nil {
+		return err
+	}
+	replaced, err := publishRelease(ctx, where, st, rel, *force)
 	if err != nil {
 		return err
 	}
@@ -330,7 +333,11 @@ func cmdReleaseShow(args []string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	files, err := gist.New(secrets.GitHubToken).Get(ctx, st.GistID)
+	where, err := openPlaces(st, secrets)
+	if err != nil {
+		return err
+	}
+	files, err := where.Read(ctx, proto.FileRelease)
 	if err != nil {
 		return err
 	}

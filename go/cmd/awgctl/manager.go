@@ -12,7 +12,6 @@ import (
 	"awgrotator/internal/config"
 	"awgrotator/internal/deploy"
 	"awgrotator/internal/fleet"
-	"awgrotator/internal/gist"
 	"awgrotator/internal/lifecycle"
 	"awgrotator/internal/proto"
 	"awgrotator/internal/remote"
@@ -46,6 +45,7 @@ func buildManagerConfig(st *store.State, secrets config.Secrets, sshKeyID string
 		VultrKey:    secrets.VultrAPIKey,
 		GitHubToken: secrets.GitHubToken,
 		GistID:      st.GistID,
+		GitLab:      gitLabSyncFor(st),
 		ServerSeed:  st.Keys.ServerSeed,
 		Cert:        cert,
 		ContentKey:  st.Keys.ContentKey,
@@ -63,6 +63,17 @@ func buildManagerConfig(st *store.State, secrets config.Secrets, sshKeyID string
 		return nil, fmt.Errorf("настройки менеджера: %w", err)
 	}
 	return cfg, nil
+}
+
+// gitLabSyncFor is what a server's configuration says about the second place the
+// files are kept, from the operator's state: nothing when there is no GitLab
+// mirror or no token for servers has been made yet.
+func gitLabSyncFor(st *store.State) *lifecycle.GitLabSync {
+	m, ok := st.GitLabMirror()
+	if !ok || m.DeployToken == "" {
+		return nil
+	}
+	return &lifecycle.GitLabSync{Base: m.Base, Project: m.ProjectID, Package: m.SyncPkg(), Token: m.DeployToken}
 }
 
 // managerFiles are the files that make a server look after itself.
@@ -179,7 +190,11 @@ func cmdCommand(args []string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	if err := gist.New(secrets.GitHubToken).Update(ctx, st.GistID, map[string]string{proto.FileCommand: blob}); err != nil {
+	where, err := openPlaces(st, secrets)
+	if err != nil {
+		return err
+	}
+	if err := where.Write(ctx, map[string]string{proto.FileCommand: blob}); err != nil {
 		return err
 	}
 
@@ -213,13 +228,17 @@ func cmdEvents(args []string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	files, err := gist.New(secrets.GitHubToken).Get(ctx, st.GistID)
+	where, err := openPlaces(st, secrets)
+	if err != nil {
+		return err
+	}
+	files, err := where.Read(ctx, proto.FileStatus)
 	if err != nil {
 		return err
 	}
 	blob := files[proto.FileStatus]
 	if blob == "" {
-		return errors.New("статуса в gist нет")
+		return errors.New("статуса нигде нет")
 	}
 	trust, err := st.Trust()
 	if err != nil {
@@ -259,13 +278,17 @@ func cmdEvents(args []string) error {
 // the address clients are told to use, and the instance holding that address
 // is the current server.
 func refreshServer(ctx context.Context, root string, st *store.State, secrets config.Secrets) (changed bool, err error) {
-	files, err := gist.New(secrets.GitHubToken).Get(ctx, st.GistID)
+	where, err := openPlaces(st, secrets)
+	if err != nil {
+		return false, err
+	}
+	files, err := where.Read(ctx, proto.FileConfig)
 	if err != nil {
 		return false, err
 	}
 	blob, ok := files[proto.FileConfig]
 	if !ok {
-		return false, errors.New("в gist нет конфига")
+		return false, errors.New("нигде нет конфига")
 	}
 	trust, err := st.Trust()
 	if err != nil {

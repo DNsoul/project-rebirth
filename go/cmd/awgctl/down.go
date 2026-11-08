@@ -11,7 +11,6 @@ import (
 
 	"awgrotator/internal/awg"
 	"awgrotator/internal/config"
-	"awgrotator/internal/gist"
 	"awgrotator/internal/proto"
 	"awgrotator/internal/store"
 	"awgrotator/internal/vultr"
@@ -104,13 +103,16 @@ func cmdDown(args []string) error {
 	if st.Server.ID == "" && st.GistID != "" {
 		// Nothing is serving now, so retract the configuration rather than
 		// leave clients retrying a dead address.
-		fmt.Println("Серверов нет — убираю конфиг из gist.")
+		fmt.Println("Серверов нет — убираю конфиг.")
 		blank, err := blankConfig(st)
 		if err != nil {
 			return err
 		}
-		if err := gist.New(secrets.GitHubToken).Update(ctx, st.GistID,
-			map[string]string{proto.FileConfig: blank}); err != nil {
+		where, err := openPlaces(st, secrets)
+		if err != nil {
+			return err
+		}
+		if err := where.Write(ctx, map[string]string{proto.FileConfig: blank}); err != nil {
 			fmt.Printf("Не удалось: %v\n", err)
 		}
 	}

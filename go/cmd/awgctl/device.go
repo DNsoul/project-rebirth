@@ -15,7 +15,6 @@ import (
 	"awgrotator/internal/awg"
 	"awgrotator/internal/config"
 	"awgrotator/internal/fleet"
-	"awgrotator/internal/gist"
 	"awgrotator/internal/proto"
 	"awgrotator/internal/store"
 	"awgrotator/internal/tunneltest"
@@ -122,13 +121,17 @@ func fetchBody(ctx context.Context, st *store.State, secrets config.Secrets) (*f
 	if st.GistID == "" {
 		return nil, errors.New("gist не создан, запусти \"awgctl init\"")
 	}
-	files, err := gist.New(secrets.GitHubToken).Get(ctx, st.GistID)
+	where, err := openPlaces(st, secrets)
+	if err != nil {
+		return nil, err
+	}
+	files, err := where.Read(ctx, proto.FileConfig)
 	if err != nil {
 		return nil, err
 	}
 	blob, ok := files[proto.FileConfig]
 	if !ok {
-		return nil, errors.New("в gist нет файла конфига")
+		return nil, errors.New("нигде нет файла конфига")
 	}
 	trust, err := st.Trust()
 	if err != nil {

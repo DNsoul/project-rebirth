@@ -2,7 +2,8 @@ import 'dart:async';
 
 import 'package:awg_client/core/app_state.dart';
 import 'package:awg_client/core/controller.dart';
-import 'package:awg_client/core/gist_source.dart' show GistSnapshot;
+import 'package:awg_client/core/gist_source.dart'
+    show GistSnapshot, GistSource, MirroredSource;
 import 'package:awg_proto/awg_proto.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -12,13 +13,18 @@ import 'fakes.dart';
 class Rig {
   Rig._(this.store);
 
-  static Future<Rig> create({PersistedState? saved}) async {
+  /// With [wrap], what the app reads from is made out of the rig's own gist, so
+  /// that a test can put other places beside it.
+  static Future<Rig> create({
+    PersistedState? saved,
+    GistSource Function(FakeGist gist)? wrap,
+  }) async {
     final rig = Rig._(MemoryStateStore(saved));
     rig.tunnel = FakeTunnel(rig.fleet, rig.clock);
     rig.probe = FakeProbe(rig.tunnel);
     rig.controller = ConnectionController(
       bootstrap: testBootstrap(),
-      gist: rig.gist,
+      gist: wrap?.call(rig.gist) ?? rig.gist,
       store: rig.store,
       tunnel: rig.tunnel,
       dns: rig.dns,
@@ -471,6 +477,170 @@ void main() {
       await fresh.controller.connect();
       expect(fresh.status.phase, Phase.failed);
       expect(fresh.status.message, contains('GitHub'));
+    });
+  });
+
+  group('with the files kept in two places', () {
+    late FakeGist gitlab;
+    late Rig two;
+    late FakeServer fra;
+
+    /// A server published only in the second place.
+    Future<void> publishOnGitlab(FakeServer s, {required int seq}) async {
+      gitlab.publish(
+        config: await sealedConfig(
+          bodyJson(
+            endpoint: s.endpoint,
+            serverByte: s.keyByte,
+            region: s.region,
+          ),
+          seq: seq,
+          at: two.clock.now(),
+          epoch: 3,
+        ),
+      );
+    }
+
+    setUp(() async {
+      gitlab = FakeGist();
+      two = await Rig.create(
+        wrap: (github) =>
+            MirroredSource([github, gitlab], straggler: Duration.zero),
+      );
+      sto = two.fleet.add('203.0.113.9:41820', 11, region: 'sto');
+      fra = two.fleet.add('203.0.113.77:41820', 12, region: 'fra');
+    });
+
+    test('works while GitHub is down, from the second place', () async {
+      two.gist.down = true;
+      await publishOnGitlab(sto, seq: 1);
+
+      await two.controller.connect();
+      expect(two.status.phase, Phase.connected, reason: two.status.message);
+      expect(two.tunnel.confOf('awgr-a'), contains('203.0.113.9:41820'));
+    });
+
+    test('works while the second place is down, from GitHub', () async {
+      await two.publish(sto);
+      gitlab.down = true;
+
+      await two.controller.connect();
+      expect(two.status.phase, Phase.connected, reason: two.status.message);
+    });
+
+    test('takes the newer configuration, wherever it is', () async {
+      // The second place has the move to the new server; GitHub missed it.
+      await two.publish(sto, seq: 4);
+      await publishOnGitlab(fra, seq: 5);
+      await two.controller.connect();
+      expect(two.status.phase, Phase.connected, reason: two.status.message);
+      expect(two.tunnel.confOf('awgr-a'), contains('203.0.113.77:41820'));
+
+      // And the other way round, after the app has seen both: GitHub moves on,
+      // and the second place is the one that is behind now.
+      await two.controller.disconnect();
+      await two.publish(sto, seq: 9);
+      await two.controller.connect();
+      expect(two.status.phase, Phase.connected, reason: two.status.message);
+      expect(two.tunnel.confOf('awgr-a'), contains('203.0.113.9:41820'));
+    });
+
+    test('a place that is behind is not written about at every look', () async {
+      await two.publish(sto, seq: 9);
+      await publishOnGitlab(fra, seq: 5);
+      await two.controller.connect();
+      await two.controller.disconnect();
+      await two.controller.connect();
+
+      expect(two.status.phase, Phase.connected, reason: two.status.message);
+      expect(two.tunnel.confOf('awgr-a'), contains('203.0.113.9:41820'));
+      expect(
+        two.logs.where((l) => l.contains('was refused')),
+        isEmpty,
+        reason: 'an older copy in one place is the normal case, not a problem',
+      );
+    });
+
+    test('a forgery in one place is not used, and is written about', () async {
+      await two.publish(sto, seq: 2);
+      gitlab.publish(
+        config: await sealedConfig(
+          bodyJson(endpoint: '203.0.113.66:1', serverByte: 66),
+          seq: 99,
+          at: two.clock.now(),
+          signWith: seed('root_seed'),
+        ),
+      );
+      await two.controller.connect();
+      expect(two.status.phase, Phase.connected, reason: two.status.message);
+      expect(two.tunnel.confOf('awgr-a'), contains('203.0.113.9:41820'));
+      expect(two.logs.where((l) => l.contains('was refused')), isNotEmpty);
+    });
+
+    test('an announcement in only one place is found', () async {
+      await two.publish(sto);
+      gitlab.publish(release: await sealedRelease());
+
+      await two.controller.checkForUpdate();
+      expect(two.controller.release?.build, 12);
+    });
+
+    test('a revocation in only one place is applied', () async {
+      await two.publish(sto);
+      await two.controller.connect();
+      await two.controller.disconnect();
+
+      gitlab.publish(revocation: await sealedRevocation(4, two.clock.now()));
+      await two.controller.connect();
+      expect(
+        two.status.phase,
+        Phase.failed,
+        reason: 'the only configuration on offer is from epoch 3',
+      );
+    });
+
+    test(
+      'one etag is saved for both places, and it saves a request each',
+      () async {
+        await two.publish(sto);
+        await publishOnGitlab(sto, seq: 1);
+        await two.controller.connect();
+
+        final saved = await two.store.load();
+        expect(saved.etag, contains('\t'), reason: 'one part for each place');
+
+        // Looking again asks each place with its part of the etag, and each
+        // answers "unchanged".
+        await two.controller.pollNow();
+        await two.controller.pollNow();
+        expect(two.gist.notModified, greaterThan(0));
+        expect(gitlab.notModified, greaterThan(0));
+      },
+    );
+
+    test('a GitHub that hangs does not hold up a connection', () async {
+      await publishOnGitlab(sto, seq: 1);
+      two.gist.fetchGate = Completer<void>();
+
+      await two.controller.connect();
+      expect(two.status.phase, Phase.connected, reason: two.status.message);
+
+      two.gist.fetchGate!.complete();
+    });
+
+    test('with both places down, the saved configuration is used', () async {
+      await two.publish(sto);
+      await two.controller.connect();
+      await two.controller.disconnect();
+
+      two.gist.down = true;
+      gitlab.down = true;
+      await two.controller.connect();
+      expect(two.status.phase, Phase.connected, reason: two.status.message);
+      expect(
+        two.logs.any((l) => l.contains('using the saved configuration')),
+        isTrue,
+      );
     });
   });
 

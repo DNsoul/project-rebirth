@@ -39,7 +39,8 @@ if (Get-Command go -ErrorAction SilentlyContinue) {
 & $awgctl trust -o $bootstrap
 if ($LASTEXITCODE -ne 0) { throw 'awgctl trust не сработал' }
 
-$listed = (Get-Content $bootstrap -Raw | ConvertFrom-Json).release_mirrors
-# @($null).Count is 1 in PowerShell, hence the test.
-$mirrors = if ($listed) { @($listed).Count } else { 0 }
-Write-Host "app\assets\bootstrap.json готов, запасных мест для установщиков: $mirrors."
+$made = Get-Content $bootstrap -Raw | ConvertFrom-Json
+# @($null).Count is 1 in PowerShell, hence the tests.
+$mirrors = if ($made.release_mirrors) { @($made.release_mirrors).Count } else { 0 }
+$places = if ($made.config_mirrors) { @($made.config_mirrors).Count } else { 0 }
+Write-Host "app\assets\bootstrap.json готов, запасных мест для установщиков: $mirrors, вторых мест для файлов конфигурации: $places."

@@ -32,6 +32,12 @@ func (c *clock) Now() time.Time {
 	return c.t
 }
 
+func (c *clock) Set(t time.Time) {
+	c.mu.Lock()
+	c.t = t
+	c.mu.Unlock()
+}
+
 func (c *clock) Advance(d time.Duration) {
 	c.mu.Lock()
 	c.t = c.t.Add(d)
@@ -218,6 +224,16 @@ type fakePub struct {
 
 	publishErr error
 	inbox      Inbox
+
+	// notSynced makes Reconcile report that a place is behind, and
+	// reconcileErr that none could be reached; reconciles counts the calls.
+	notSynced    bool
+	reconcileErr error
+	reconciles   int
+
+	// syncAfter, when set, makes the places agree once Reconcile has been
+	// called that many times.
+	syncAfter int
 }
 
 func (p *fakePub) PublishConfig(_ context.Context, body *fleet.ConfigBody) (uint64, error) {
@@ -248,6 +264,18 @@ func (p *fakePub) Current(context.Context) (*fleet.ConfigBody, uint64, error) {
 }
 
 func (p *fakePub) ReadInbox(context.Context) (Inbox, error) { return p.inbox, nil }
+
+func (p *fakePub) Reconcile(context.Context) (SyncState, error) {
+	p.ev.add("reconcile")
+	p.reconciles++
+	if p.reconcileErr != nil {
+		return SyncState{Detail: p.reconcileErr.Error()}, p.reconcileErr
+	}
+	if p.notSynced && (p.syncAfter == 0 || p.reconciles <= p.syncAfter) {
+		return SyncState{Detail: "GitLab is behind"}, nil
+	}
+	return SyncState{Synced: true, Detail: "all places agree"}, nil
+}
 
 type fakeHost struct {
 	running    bool

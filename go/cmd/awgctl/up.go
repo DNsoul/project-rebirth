@@ -12,7 +12,6 @@ import (
 	"awgrotator/internal/config"
 	"awgrotator/internal/deploy"
 	"awgrotator/internal/fleet"
-	"awgrotator/internal/gist"
 	"awgrotator/internal/lifecycle"
 	"awgrotator/internal/proto"
 	"awgrotator/internal/store"
@@ -166,11 +165,11 @@ func cmdUp(args []string) error {
 
 	// Publish before touching the old server: if publishing fails, clients
 	// still have somewhere to connect.
-	logf("Публикую конфиг в gist…")
+	logf("Публикую конфиг…")
 	if body == nil {
 		body = gen.Body(res.Region, res.IP, clientNet, time.Now())
 	}
-	if err := publishConfig(ctx, st, secrets.GitHubToken, body, cert); err != nil {
+	if err := publishConfig(ctx, st, secrets, body, cert); err != nil {
 		return fmt.Errorf("сервер работает (%s), но конфиг не опубликован: %w", res.IP, err)
 	}
 
@@ -284,7 +283,7 @@ func ensureSSHKey(ctx context.Context, vc *vultr.Client, st *store.State, root s
 	return id, nil
 }
 
-func publishConfig(ctx context.Context, st *store.State, token string, body *fleet.ConfigBody, cert proto.Cert) error {
+func publishConfig(ctx context.Context, st *store.State, secrets config.Secrets, body *fleet.ConfigBody, cert proto.Cert) error {
 	if err := body.Validate(); err != nil {
 		return err
 	}
@@ -307,12 +306,16 @@ func publishConfig(ctx context.Context, st *store.State, token string, body *fle
 		return err
 	}
 
-	gc := gist.New(token)
+	where, err := openPlaces(st, secrets)
+	if err != nil {
+		return err
+	}
 
-	// Servers that replace themselves keep publishing, so the number on the
-	// gist can be ahead of this machine's. Numbering from the larger of the
-	// two is what keeps a new configuration from being rejected as old.
-	if files, err := gc.Get(ctx, st.GistID); err == nil {
+	// Servers that replace themselves keep publishing, so the number that is
+	// published, in whichever place it is newest, can be ahead of this
+	// machine's. Numbering from the larger of the two is what keeps a new
+	// configuration from being rejected as old.
+	if files, err := where.Read(ctx, proto.FileConfig); err == nil {
 		if blob, ok := files[proto.FileConfig]; ok {
 			if _, state, err := trust.OpenDoc(blob, proto.KindConfig, now, proto.State{}); err == nil && state.LastSeq > st.Seq {
 				st.Seq = state.LastSeq
@@ -339,5 +342,5 @@ func publishConfig(ctx context.Context, st *store.State, token string, body *fle
 		return fmt.Errorf("свой же конфиг не проходит проверку: %w", err)
 	}
 
-	return gc.Update(ctx, st.GistID, map[string]string{proto.FileConfig: blob})
+	return where.Write(ctx, map[string]string{proto.FileConfig: blob})
 }

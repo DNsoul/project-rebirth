@@ -22,7 +22,7 @@ type fakeGist struct {
 	err     error
 }
 
-func (g *fakeGist) Get(ctx context.Context, id string) (map[string]string, error) {
+func (g *fakeGist) Read(ctx context.Context, names ...string) (map[string]string, error) {
 	if g.err != nil {
 		return nil, g.err
 	}
@@ -33,7 +33,7 @@ func (g *fakeGist) Get(ctx context.Context, id string) (map[string]string, error
 	return out, nil
 }
 
-func (g *fakeGist) Update(ctx context.Context, id string, files map[string]string) error {
+func (g *fakeGist) Write(ctx context.Context, files map[string]string) error {
 	if g.err != nil {
 		return g.err
 	}

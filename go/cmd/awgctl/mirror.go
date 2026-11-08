@@ -21,15 +21,19 @@ import (
 
 func cmdMirror(args []string) error {
 	if len(args) == 0 {
-		return errors.New("нужно указать: set | show")
+		return errors.New("нужно указать: set | token | sync | show")
 	}
 	switch args[0] {
 	case "set":
 		return cmdMirrorSet(args[1:])
+	case "token":
+		return cmdMirrorToken(args[1:])
+	case "sync":
+		return cmdMirrorSync(args[1:])
 	case "show":
 		return cmdMirrorShow(args[1:])
 	}
-	return fmt.Errorf("неизвестная подкоманда %q: set | show", args[0])
+	return fmt.Errorf("неизвестная подкоманда %q: set | token | sync | show", args[0])
 }
 
 // setMirror looks the project up and returns the mirror that names it. It makes
@@ -92,6 +96,10 @@ func cmdMirrorSet(args []string) error {
 	}
 	fmt.Printf("Запасное место: GitLab, проект %s (id %d), пакет «%s».\n", m.Path, m.ProjectID, m.Package)
 	fmt.Println("Установщики при выпуске будут загружаться и туда (release publish), если есть GITLAB_TOKEN в secrets.env.")
+	fmt.Println("Файлы конфигурации (то, что лежит в gist) будут писаться туда же, наравне с GitHub:")
+	fmt.Println("  1. awgctl mirror token   токен для серверов, один раз")
+	fmt.Println("  2. awgctl mirror sync    первое заполнение")
+	fmt.Println("  3. awgctl update         работающему серверу, чтобы он тоже писал на GitLab")
 	fmt.Println("Чтобы приложения знали об этом месте, их нужно пересобрать: адрес попадает в app/assets/bootstrap.json (awgctl trust -o).")
 	return nil
 }
@@ -111,11 +119,17 @@ func cmdMirrorShow(args []string) error {
 	}
 	secrets, _ := config.LoadSecrets(root)
 	fmt.Print(describeMirrors(st))
-	if len(st.Mirrors) > 0 {
+	if m, ok := st.GitLabMirror(); ok {
+		fmt.Print(syncPackageInfo(m))
 		if secrets.GitLabToken == "" {
 			fmt.Println("GITLAB_TOKEN в secrets.env не задан: загрузить файлы на GitLab нельзя.")
 		} else {
 			fmt.Println("GITLAB_TOKEN задан.")
+		}
+		if m.DeployToken == "" {
+			fmt.Println("Токена для серверов нет: awgctl mirror token")
+		} else {
+			fmt.Println("Токен для серверов выпущен.")
 		}
 	}
 	return nil
@@ -184,6 +198,11 @@ type bootstrapBundle struct {
 	GistID    string `json:"gist_id"`
 	GistOwner string `json:"gist_owner"`
 
+	// ConfigMirrors are templates of the addresses of the other places the
+	// signed files are kept, with {file} for the app to fill in. The app reads
+	// them next to the gist and takes whichever is newer.
+	ConfigMirrors []string `json:"config_mirrors,omitempty"`
+
 	// ReleaseMirrors are templates of the addresses of other copies of the
 	// installers, with {version} and {file} for the app to fill in.
 	ReleaseMirrors []string `json:"release_mirrors,omitempty"`
@@ -195,5 +214,6 @@ func newBootstrapBundle(trust proto.Trust, st *store.State) bootstrapBundle {
 		GistID:         st.GistID,
 		GistOwner:      st.GistOwner,
 		ReleaseMirrors: st.ReleaseMirrors(),
+		ConfigMirrors:  st.ConfigMirrors(),
 	}
 }

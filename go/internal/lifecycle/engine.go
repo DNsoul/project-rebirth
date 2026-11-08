@@ -469,6 +469,10 @@ func (e *Engine) inheritedJournal() Journal {
 	}
 }
 
+// MaxLinger is the longest an old server is kept after its successor has been
+// published, however the places the configuration is kept in are doing.
+const MaxLinger = time.Hour
+
 // Retire waits out the grace period for the attempt and then deletes the
 // server it runs on.
 //
@@ -495,19 +499,38 @@ func (e *Engine) Retire(ctx context.Context, attemptID string) error {
 	}
 	retireAt := time.Unix(attempt.RetireAt, 0)
 	earliest := time.Unix(attempt.PublishedAt, 0).Add(e.Cfg.Policy.MinGrace())
+	giveUpAt := time.Unix(attempt.PublishedAt, 0).Add(MaxLinger)
 
 	for {
 		now := e.now()
-		if !now.Before(retireAt) {
-			break
-		}
-		if !now.Before(earliest) {
+		due := !now.Before(retireAt)
+		if !due && !now.Before(earliest) {
 			if idle, err := e.idle(ctx); err == nil && idle {
 				e.log().Info("nobody is connected; retiring before the grace period ends")
-				break
+				due = true
 			}
 		}
-		wait := min(30*time.Second, retireAt.Sub(now))
+		if due {
+			// The old server goes only once every place the clients read from
+			// has the new configuration: a client that can reach only one of
+			// them would otherwise be left with the address of a server that is
+			// gone. A place that stays behind does not keep the old server
+			// forever, though: a move happens because this server is not
+			// serving anyone any more, so after MaxLinger it goes regardless.
+			st, err := e.Pub.Reconcile(ctx)
+			if err == nil && st.Synced {
+				break
+			}
+			if !now.Before(giveUpAt) {
+				e.log().Warn("retiring although not every place has the new configuration", "detail", st.Detail, "error", err)
+				break
+			}
+			e.log().Info("waiting for every place to have the new configuration before retiring", "detail", st.Detail, "error", err)
+		}
+		wait := 30 * time.Second
+		if !due {
+			wait = min(wait, retireAt.Sub(now))
+		}
 		if err := e.sleep(ctx, wait); err != nil {
 			return err
 		}

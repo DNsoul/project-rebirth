@@ -28,6 +28,12 @@ type Intervals struct {
 	External  time.Duration // reachability from outside
 	Status    time.Duration // publishing the status
 	Heartbeat time.Duration // republishing the configuration
+
+	// Reconcile is how often the places the files are kept are compared when
+	// they were last found to agree, and ReconcileBehind how often while one of
+	// them is behind or could not be reached.
+	Reconcile       time.Duration
+	ReconcileBehind time.Duration
 }
 
 // StatusGrace is how long the node's status may be missing or stale before the
@@ -42,6 +48,9 @@ const (
 	DefaultExternalEvery  = 10 * time.Minute
 	DefaultStatusEvery    = 24 * time.Hour
 	DefaultHeartbeatEvery = 7 * 24 * time.Hour
+
+	DefaultReconcileEvery       = time.Hour
+	DefaultReconcileBehindEvery = 5 * time.Minute
 )
 
 func (i Intervals) withDefaults() Intervals {
@@ -56,6 +65,12 @@ func (i Intervals) withDefaults() Intervals {
 	}
 	if i.Heartbeat == 0 {
 		i.Heartbeat = DefaultHeartbeatEvery
+	}
+	if i.Reconcile == 0 {
+		i.Reconcile = DefaultReconcileEvery
+	}
+	if i.ReconcileBehind == 0 {
+		i.ReconcileBehind = DefaultReconcileBehindEvery
 	}
 	return i
 }
@@ -83,6 +98,12 @@ type Manager struct {
 	// that a node which has only just started is given time to write its first
 	// one before it is judged.
 	statusBadSince time.Time
+
+	// lastReconcile is when the places were last compared, and behind says that
+	// they were not found in step, or that something has been published since,
+	// so the next look comes sooner.
+	lastReconcile time.Time
+	behind        bool
 
 	pending   *MoveRequest
 	statusDue bool
@@ -144,6 +165,9 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 
 	m.statusDue = true
+	// A new server looks at once at whether the places agree: it may be the
+	// first thing that fills one of them.
+	m.behind = true
 	// The first look at the node waits a full interval: it was probably
 	// started a moment before this manager was.
 	m.lastLocal = now
@@ -206,6 +230,7 @@ func (m *Manager) Tick(ctx context.Context) error {
 	}
 	m.maybeStatus(ctx, now)
 	m.maybeHeartbeat(ctx, now)
+	m.maybeReconcile(ctx, now)
 	return nil
 }
 
@@ -413,6 +438,7 @@ func (m *Manager) maybeStatus(ctx context.Context, now time.Time) {
 		return
 	}
 	m.statusDue = false
+	m.behind = true
 	_ = m.J.Update(func(j *Journal) { j.LastStatusAt = now.Unix() })
 }
 
@@ -483,7 +509,40 @@ func (m *Manager) maybeHeartbeat(ctx context.Context, now time.Time) {
 		return
 	}
 	m.log().Info("republished the configuration", "seq", seq)
+	m.behind = true
 	_ = m.J.Update(func(j *Journal) { j.LastHeartbeatAt = now.Unix() })
+}
+
+// maybeReconcile compares the places the files are kept and brings the one that
+// is behind up to date. A place can miss a publication, or the operator's
+// announcement, simply because it was out of reach at that moment; this is what
+// makes them mirrors of each other anyway. While one is behind it looks again
+// every few minutes, and otherwise now and then.
+func (m *Manager) maybeReconcile(ctx context.Context, now time.Time) {
+	every := m.Every.Reconcile
+	if m.behind {
+		every = m.Every.ReconcileBehind
+	}
+	if !m.lastReconcile.IsZero() && now.Sub(m.lastReconcile) < every {
+		return
+	}
+	m.lastReconcile = now
+
+	st, err := m.Pub.Reconcile(ctx)
+	if err != nil {
+		m.behind = true
+		m.log().Warn("could not compare the places the configuration is kept in", "error", err)
+		return
+	}
+	m.behind = !st.Synced
+	switch {
+	case !st.Synced:
+		m.log().Warn("the places the configuration is kept in are not in step yet; trying again soon", "detail", st.Detail)
+	case st.Wrote:
+		m.log().Info("brought the places the configuration is kept in into step", "detail", st.Detail)
+	default:
+		m.log().Debug("the places the configuration is kept in agree")
+	}
 }
 
 // Verdict returns the current health verdict, for a caller that wants to
