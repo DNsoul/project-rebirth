@@ -41,8 +41,8 @@ void main() {
 
   setUp(() {
     dir = Directory.systemTemp.createTempSync('awgr-test-');
-    File('${dir.path}\\amneziawg.exe').writeAsStringSync('');
-    File('${dir.path}\\awg.exe').writeAsStringSync('');
+    File('${dir.path}\\awgtunnel.exe').writeAsStringSync('');
+    File('${dir.path}\\wintun.dll').writeAsStringSync('');
     serviceRunning = {};
     calls = Calls()
       ..answer = (exe, args) {
@@ -66,15 +66,13 @@ void main() {
             '\r\n\r\nEnd of search: ${serviceRunning.length} match(es) found.\r\n',
           );
         }
-        if (exe.endsWith('amneziawg.exe') &&
-            args.first == '/installtunnelservice') {
+        if (exe.endsWith('awgtunnel.exe') && args.first == 'install') {
           final name = RegExp(
             r'([a-z0-9-]+)\.conf$',
           ).firstMatch(args[1])!.group(1);
           serviceRunning.add('AmneziaWGTunnel\$$name');
         }
-        if (exe.endsWith('amneziawg.exe') &&
-            args.first == '/uninstalltunnelservice') {
+        if (exe.endsWith('awgtunnel.exe') && args.first == 'uninstall') {
           serviceRunning.remove('AmneziaWGTunnel\$${args[1]}');
         }
         if (exe == 'whoami') {
@@ -95,7 +93,7 @@ void main() {
 
   group('the tunnel driver', () {
     test(
-      'is ready when the client is installed and the app is elevated',
+      'is ready when its own tunnel is there and the app is elevated',
       () async {
         expect(await driver.preflight(), isNull);
       },
@@ -113,13 +111,35 @@ void main() {
       },
     );
 
-    test('says so when AmneziaWG is not installed', () async {
-      final empty = WindowsTunnelDriver(
-        installDir: '${dir.path}\\nowhere',
-        confDir: dir.path,
-        run: calls.run,
-      );
-      expect(await empty.preflight(), contains('AmneziaWG'));
+    test(
+      'says so when the tunnel files are missing, and asks for nothing else',
+      () async {
+        final empty = WindowsTunnelDriver(
+          installDir: '${dir.path}\\nowhere',
+          confDir: dir.path,
+          run: calls.run,
+        );
+        final said = await empty.preflight();
+        expect(said, contains('Переустановите'));
+        expect(
+          said,
+          isNot(contains('AmneziaWG')),
+          reason: 'nobody has to install anything else',
+        );
+
+        File('${dir.path}\\wintun.dll').deleteSync();
+        expect(
+          await driver.preflight(),
+          contains('Переустановите'),
+          reason: 'the program without the adapter cannot connect either',
+        );
+      },
+    );
+
+    test('looks for its tunnel beside the program, not in Program Files', () {
+      final dir = defaultTunnelDir();
+      expect(dir, endsWith('\\tunnel'));
+      expect(dir.toLowerCase(), isNot(contains('amneziawg')));
     });
 
     test(
@@ -136,19 +156,18 @@ void main() {
         expect(
           bytes.take(3),
           isNot([0xEF, 0xBB, 0xBF]),
-          reason: 'the client rejects a file that starts with a BOM',
+          reason: 'the tunnel rejects a file that starts with a BOM',
         );
         expect(utf8.decode(bytes), '[Interface]\nPrivateKey = x\n');
 
-        final install = calls.of('amneziawg.exe').first;
-        expect(install, [
-          '/installtunnelservice',
-          '${dir.path}\\tunnels\\awgr-a.conf',
-        ]);
+        final install = calls.of('awgtunnel.exe').first;
+        expect(install, ['install', '${dir.path}\\tunnels\\awgr-a.conf']);
         expect(
-          calls.of('sc.exe').where((a) => a.first == 'config').single,
-          [r'config', r'AmneziaWGTunnel$awgr-a', 'start=', 'demand'],
-          reason: 'a restart must not bring the tunnel up on its own',
+          calls.of('sc.exe').where((a) => a.first == 'config'),
+          isEmpty,
+          reason:
+              'awgtunnel makes the service hand-start itself, so a restart '
+              'does not bring the tunnel up on its own',
         );
       },
     );
@@ -176,8 +195,8 @@ void main() {
       await driver.install(name: 'awgr-a', conf: 'one');
       calls.log.clear();
       await driver.install(name: 'awgr-a', conf: 'two');
-      expect(calls.ran('amneziawg.exe', '/uninstalltunnelservice'), isTrue);
-      expect(calls.ran('amneziawg.exe', '/installtunnelservice'), isTrue);
+      expect(calls.ran('awgtunnel.exe', 'uninstall'), isTrue);
+      expect(calls.ran('awgtunnel.exe', 'install'), isTrue);
       expect(
         File('${dir.path}\\tunnels\\awgr-a.conf').readAsStringSync(),
         'two',
@@ -185,9 +204,9 @@ void main() {
     });
 
     test(
-      'a client that refuses leaves nothing behind and says what it said',
+      'a tunnel that refuses leaves nothing behind and says what it said',
       () async {
-        calls.answer = (exe, args) => exe.endsWith('amneziawg.exe')
+        calls.answer = (exe, args) => exe.endsWith('awgtunnel.exe')
             ? fail(1, 'Line must occur in a section')
             : null;
         await expectLater(
@@ -211,7 +230,7 @@ void main() {
     test('removes a tunnel and its file', () async {
       await driver.install(name: 'awgr-a', conf: 'x');
       await driver.uninstall('awgr-a');
-      expect(calls.ran('amneziawg.exe', '/uninstalltunnelservice'), isTrue);
+      expect(calls.ran('awgtunnel.exe', 'uninstall'), isTrue);
       expect(File('${dir.path}\\tunnels\\awgr-a.conf').existsSync(), isFalse);
       expect(await driver.installed(), isEmpty);
     });
@@ -220,9 +239,67 @@ void main() {
       'removing what is not there is harmless and runs no uninstaller',
       () async {
         await driver.uninstall('awgr-b');
-        expect(calls.ran('amneziawg.exe', '/uninstalltunnelservice'), isFalse);
+        expect(calls.ran('awgtunnel.exe', 'uninstall'), isFalse);
       },
     );
+
+    test(
+      'removes a service left by another program, found by its name',
+      () async {
+        // As after an update from a version that used the AmneziaWG client: the
+        // service is there, made by another program, and its file is not.
+        serviceRunning = {r'AmneziaWGTunnel$awgr-a'};
+        await driver.uninstall('awgr-a');
+        expect(calls.of('awgtunnel.exe').single, ['uninstall', 'awgr-a']);
+        expect(await driver.installed(), isEmpty);
+      },
+    );
+
+    test(
+      'puts the tunnel\'s own log in the program\'s log when it fails',
+      () async {
+        final lines = <String>[];
+        final logging = WindowsTunnelDriver(
+          installDir: dir.path,
+          confDir: '${dir.path}\\tunnels',
+          run: calls.run,
+          log: lines.add,
+        );
+        calls.answer = (exe, args) {
+          if (!exe.endsWith('awgtunnel.exe')) return null;
+          return switch (args.first) {
+            'install' => fail(1, 'the tunnel did not start'),
+            'log' => ok(
+              '[awgr-a] Creating Wintun interface\r\n\r\n[awgr-a] Wintun failed\r\n',
+            ),
+            _ => null,
+          };
+        };
+        await expectLater(
+          logging.install(name: 'awgr-a', conf: 'x'),
+          throwsA(isA<TunnelException>()),
+        );
+        expect(calls.of('awgtunnel.exe').last, ['log', '${dir.path}\\tunnels']);
+        expect(
+          lines.single,
+          allOf(
+            contains('Creating Wintun interface'),
+            contains('Wintun failed'),
+            isNot(contains('\n\n')),
+          ),
+        );
+      },
+    );
+
+    test('does not ask for the log when nobody keeps one', () async {
+      calls.answer = (exe, args) =>
+          exe.endsWith('awgtunnel.exe') ? fail(1, 'no') : null;
+      await expectLater(
+        driver.install(name: 'awgr-a', conf: 'x'),
+        throwsA(isA<TunnelException>()),
+      );
+      expect(calls.ran('awgtunnel.exe', 'log'), isFalse);
+    });
 
     test('lists only the tunnels it owns', () async {
       serviceRunning = {
@@ -289,33 +366,29 @@ void main() {
             reason: name,
           );
         }
-        expect(calls.of('amneziawg.exe'), isEmpty);
+        expect(calls.of('awgtunnel.exe'), isEmpty);
       },
     );
 
-    test('reads the latest handshake from the client', () async {
-      calls.answer = (exe, args) => exe.endsWith('awg.exe')
-          ? ok('AAAA=\t1794040024\r\nBBBB=\t0\r\n')
-          : null;
+    test('reads the latest handshake from the tunnel', () async {
+      calls.answer = (exe, args) =>
+          exe.endsWith('awgtunnel.exe') ? ok('1794040024\r\n') : null;
       final hs = await driver.latestHandshake('awgr-a');
       expect(
         hs,
         DateTime.fromMillisecondsSinceEpoch(1794040024 * 1000, isUtc: true),
       );
-      expect(calls.of('awg.exe').single, [
-        'show',
-        'awgr-a',
-        'latest-handshakes',
-      ]);
+      expect(calls.of('awgtunnel.exe').single, ['handshake', 'awgr-a']);
     });
 
     test(
       'no handshake yet, or a tunnel that is not running, is null',
       () async {
         calls.answer = (exe, args) =>
-            exe.endsWith('awg.exe') ? ok('AAAA=\t0\r\n') : null;
+            exe.endsWith('awgtunnel.exe') ? ok('0\r\n') : null;
         expect(await driver.latestHandshake('awgr-a'), isNull);
-        calls.answer = (exe, args) => exe.endsWith('awg.exe') ? fail(1) : null;
+        calls.answer = (exe, args) =>
+            exe.endsWith('awgtunnel.exe') ? fail(1) : null;
         expect(await driver.latestHandshake('awgr-a'), isNull);
       },
     );
@@ -325,9 +398,15 @@ void main() {
     test('handshakes', () {
       expect(parseLatestHandshake(''), isNull);
       expect(parseLatestHandshake('garbage'), isNull);
+      expect(parseLatestHandshake('0\r\n'), isNull);
+      expect(
+        parseLatestHandshake('1794040024\r\n'),
+        DateTime.fromMillisecondsSinceEpoch(1794040024 * 1000, isUtc: true),
+      );
       expect(
         parseLatestHandshake('K1=\t100\nK2=\t300\nK3=\t200\n'),
         DateTime.fromMillisecondsSinceEpoch(300000, isUtc: true),
+        reason: 'the older form, one line per peer',
       );
     });
 

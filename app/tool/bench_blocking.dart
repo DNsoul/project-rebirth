@@ -55,10 +55,9 @@ Future<void> main() async {
           as Map<String, Object?>;
   final keys = vectors['keys']! as Map<String, Object?>;
   final contentKey = decode(keys['content_key']! as String);
-  final configDoc =
-      (vectors['cases']! as List).cast<Map<String, Object?>>().firstWhere(
-        (c) => c['name'] == 'config',
-      )['document']!;
+  final configDoc = (vectors['cases']! as List)
+      .cast<Map<String, Object?>>()
+      .firstWhere((c) => c['name'] == 'config')['document']!;
   final trust = Trust(
     rootPub: keys['root_pub']! as String,
     backupPub: keys['backup_pub']! as String,
@@ -105,14 +104,11 @@ Future<void> main() async {
     ]),
   );
   await measure(
-    'awg.exe show (as latestHandshake(), 5 times)',
+    'awgtunnel.exe handshake (as latestHandshake(), 5 times)',
     () async {
+      // Built by scripts\build-tunnel.ps1; run from the app folder.
       for (var i = 0; i < 5; i++) {
-        await run(r'C:\Program Files\AmneziaWG\awg.exe', [
-          'show',
-          'awgr-a',
-          'latest-handshakes',
-        ]);
+        await run(r'..\dist\tunnel\awgtunnel.exe', ['handshake', 'awgr-a']);
       }
     },
   );

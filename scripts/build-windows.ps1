@@ -21,6 +21,11 @@ $root = Split-Path -Parent $PSScriptRoot
 $app = Join-Path $root 'app'
 $bootstrap = Join-Path $app 'assets\bootstrap.json'
 
+# The program carries its own tunnel service and Wintun, so that nothing else has
+# to be installed. Built first: it is quick, and a build that cannot make it is
+# not worth waiting for the rest of.
+& (Join-Path $PSScriptRoot 'build-tunnel.ps1')
+
 if (-not (Test-Path $bootstrap)) {
     Write-Host 'Нет app\assets\bootstrap.json, делаю через awgctl…'
     & (Join-Path $root 'dist\awgctl.exe') trust -o $bootstrap
@@ -51,6 +56,14 @@ $out = Join-Path $root $OutDir
 if (Test-Path $out) { Remove-Item $out -Recurse -Force }
 New-Item -ItemType Directory -Force $out | Out-Null
 Copy-Item (Join-Path $app 'build\windows\x64\runner\Release\*') $out -Recurse -Force
+
+# The tunnel goes in a folder of its own beside Rebirth.exe (the program looks for
+# it there): wintun.dll is loaded from the folder of the program that uses it.
+$tunnelOut = Join-Path $out 'tunnel'
+New-Item -ItemType Directory -Force $tunnelOut | Out-Null
+foreach ($f in 'awgtunnel.exe', 'wintun.dll', 'wintun-LICENSE.txt') {
+    Copy-Item (Join-Path $root "dist\tunnel\$f") $tunnelOut -Force
+}
 
 if ($NoElevation) {
     Write-Host "Готово (БЕЗ запроса прав администратора, только для разработки): $out"

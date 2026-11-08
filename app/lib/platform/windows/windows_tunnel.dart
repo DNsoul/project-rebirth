@@ -53,22 +53,30 @@ List<String> powershellArguments(String script) => [
   '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $script',
 ];
 
-/// Brings tunnels up through the AmneziaWG client that is installed on the
-/// machine: its tunnel service does the actual work (the network adapter, the
-/// routes, the protocol), and this only hands it a configuration.
+/// Where the program's own tunnel is: the `tunnel` folder beside the program.
+String defaultTunnelDir() =>
+    '${File(Platform.resolvedExecutable).parent.path}\\tunnel';
+
+/// Brings tunnels up through the tunnel service the program ships with
+/// (`awgtunnel.exe`, built from the same library the AmneziaWG client for Windows
+/// runs, and Wintun's `wintun.dll` beside it): the service does the actual work
+/// (the network adapter, the routes, the protocol), and this only hands it a
+/// configuration. Nothing else has to be installed on the machine.
 ///
 /// Needs administrator rights, which the app asks for once, when it starts.
 class WindowsTunnelDriver implements TunnelDriver {
   WindowsTunnelDriver({
-    this.installDir = r'C:\Program Files\AmneziaWG',
+    String? installDir,
     String? confDir,
     RunProcess? run,
     this.log,
-  }) : confDir =
+  }) : installDir = installDir ?? defaultTunnelDir(),
+       confDir =
            confDir ??
            '${Platform.environment['ProgramData'] ?? r'C:\ProgramData'}\\awg-rotator\\tunnels',
        _run = run ?? runProcess;
 
+  /// The folder with `awgtunnel.exe` and `wintun.dll`.
   final String installDir;
 
   /// Where the configurations are written. Only administrators and the system
@@ -78,19 +86,21 @@ class WindowsTunnelDriver implements TunnelDriver {
   final void Function(String line)? log;
   final RunProcess _run;
 
-  /// The service the AmneziaWG client makes for a tunnel called `x`.
+  /// The service the tunnel program makes for a tunnel called `x`. The name is the
+  /// one the AmneziaWG client uses, because it comes from the library both are
+  /// made of.
   static const servicePrefix = r'AmneziaWGTunnel$';
 
-  String get _tunnelExe => '$installDir\\amneziawg.exe';
-  String get _awgExe => '$installDir\\awg.exe';
+  String get _tunnelExe => '$installDir\\awgtunnel.exe';
+  String get _wintunDll => '$installDir\\wintun.dll';
 
   bool _aclDone = false;
 
   @override
   Future<String?> preflight() async {
     if (!Platform.isWindows) return 'Это приложение работает только в Windows.';
-    if (!File(_tunnelExe).existsSync() || !File(_awgExe).existsSync()) {
-      return 'Не найден AmneziaWG для Windows. Установите его (github.com/amnezia-vpn/amneziawg-windows-client/releases) и запустите Rebirth снова.';
+    if (!File(_tunnelExe).existsSync() || !File(_wintunDll).existsSync()) {
+      return 'Не найдены файлы туннеля Rebirth. Переустановите программу.';
     }
     if (!await _isElevated()) {
       return 'Нужны права администратора. Закройте Rebirth и запустите его заново: Windows спросит разрешение.';
@@ -116,20 +126,21 @@ class WindowsTunnelDriver implements TunnelDriver {
     if (await _serviceState(name) != null) await uninstall(name);
 
     final path = '$confDir\\$name.conf';
-    // Written as bytes with no byte order mark: the client rejects a file that
+    // Written as bytes with no byte order mark: the tunnel rejects a file that
     // starts with one.
     await File(path).writeAsBytes(utf8.encode(conf), flush: true);
 
-    final r = await _run(_tunnelExe, ['/installtunnelservice', path]);
+    // The service it makes is started by hand, when the app asks, never by the
+    // system: if the machine restarts, nothing sends names to a server that may
+    // be gone. One that does not start is not left behind.
+    final r = await _run(_tunnelExe, ['install', path]);
     if (r.exitCode != 0) {
       await _deleteConf(name);
+      await _logTunnelLog('$name did not install');
       throw TunnelException(
         'Не удалось запустить туннель. Повторите попытку. (Код ${r.exitCode}. ${_trim('${r.stderr}${r.stdout}')})',
       );
     }
-    // The tunnel is started by hand when the app asks, never by the system: if
-    // the machine restarts, nothing sends names to a server that may be gone.
-    await _run('sc.exe', ['config', '$servicePrefix$name', 'start=', 'demand']);
 
     // Generous: a slow start is better waited out than torn down and started
     // again, which is what failing here leads to.
@@ -138,6 +149,7 @@ class WindowsTunnelDriver implements TunnelDriver {
       running: true,
       within: const Duration(seconds: 45),
     )) {
+      await _logTunnelLog('$name did not come up');
       throw TunnelException(
         'Туннель не запустился. Повторите попытку; если так повторяется, перезагрузите компьютер.',
       );
@@ -149,7 +161,8 @@ class WindowsTunnelDriver implements TunnelDriver {
   Future<void> uninstall(String name) async {
     _checkName(name);
     if (await _serviceState(name) != null) {
-      await _run(_tunnelExe, ['/uninstalltunnelservice', name]);
+      // Whichever program made the service: it is found by its name.
+      await _run(_tunnelExe, ['uninstall', name]);
       await _waitFor(name, running: false, within: const Duration(seconds: 15));
     }
     await _deleteConf(name);
@@ -158,7 +171,7 @@ class WindowsTunnelDriver implements TunnelDriver {
   @override
   Future<DateTime?> latestHandshake(String name) async {
     _checkName(name);
-    final r = await _run(_awgExe, ['show', name, 'latest-handshakes']);
+    final r = await _run(_tunnelExe, ['handshake', name]);
     if (r.exitCode != 0) return null;
     return parseLatestHandshake('${r.stdout}');
   }
@@ -238,6 +251,24 @@ class WindowsTunnelDriver implements TunnelDriver {
     _aclDone = true;
   }
 
+  /// Writes what the tunnel service has put in its log to the program's log, to
+  /// say why it did not come up. Best effort: it is for the person who reads the
+  /// log, never a reason for anything else to fail.
+  Future<void> _logTunnelLog(String why) async {
+    if (log == null) return;
+    try {
+      final r = await _run(_tunnelExe, ['log', confDir]);
+      final lines = const LineSplitter()
+          .convert('${r.stdout}')
+          .where((l) => l.trim().isNotEmpty)
+          .toList();
+      final tail = lines.length > 20 ? lines.sublist(lines.length - 20) : lines;
+      log!('tunnel log ($why):\n${tail.join('\n')}');
+    } on Object catch (e) {
+      log!('tunnel log ($why): not readable: $e');
+    }
+  }
+
   Future<void> _deleteConf(String name) async {
     try {
       final f = File('$confDir\\$name.conf');
@@ -260,13 +291,13 @@ class WindowsTunnelDriver implements TunnelDriver {
       s.trim().length > 200 ? '${s.trim().substring(0, 200)}…' : s.trim();
 }
 
-/// The newest handshake in the output of `awg show <name> latest-handshakes`,
-/// which is one `public-key<TAB>unix-seconds` line per peer, zero for none yet.
+/// The newest handshake in the output of `awgtunnel handshake <name>`, which is
+/// the time in unix seconds, zero for none yet. Also reads the older form, one
+/// `public-key<TAB>unix-seconds` line per peer, as `awg show` printed it.
 DateTime? parseLatestHandshake(String output) {
   var newest = 0;
   for (final line in const LineSplitter().convert(output)) {
     final parts = line.trim().split(RegExp(r'\s+'));
-    if (parts.length < 2) continue;
     final seconds = int.tryParse(parts.last);
     if (seconds != null && seconds > newest) newest = seconds;
   }

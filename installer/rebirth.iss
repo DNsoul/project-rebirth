@@ -13,8 +13,10 @@
 ;     signs in, hidden in the notification area, connecting by itself;
 ;   - starts the program again when it was run silently, which is how the
 ;     program updates itself: it runs this setup with /SILENT and leaves.
-;   - warns, at the end, if AmneziaWG for Windows is not there. The program
-;     drives it and cannot connect without it.
+;   - takes the program's own tunnel with it (the tunnel folder: awgtunnel.exe and
+;     wintun.dll, made by scripts\build-tunnel.ps1 and put in dist\rebirth-windows
+;     by scripts\build-windows.ps1), so nothing else has to be installed. When the
+;     program is removed, the tunnel services it made go with it.
 ;
 ; The file is UTF-8 with a byte order mark, which Inno Setup needs to read the
 ; Russian text.
@@ -29,7 +31,9 @@
 #define AppName "Rebirth"
 #define AppExe "Rebirth.exe"
 #define AutostartTask "Rebirth"
-#define AmneziaPage "https://github.com/amnezia-vpn/amneziawg-windows-client/releases/latest"
+; The names of the tunnels the program makes (lib/core: awgr-a and awgr-b take turns,
+; awgr-enroll registers a new device).
+#define TunnelExe "{app}\tunnel\awgtunnel.exe"
 
 [Setup]
 ; Never change: it is what makes a new setup an update of the installed program.
@@ -67,8 +71,6 @@ russian.TaskAutostart=Запускать вместе с Windows (свернут
 russian.TaskDesktopIcon=Значок на рабочем столе
 russian.StatusAutostart=Настраиваю запуск вместе с Windows…
 russian.RunApp=Запустить Rebirth
-russian.OpenAmnezia=Открыть страницу загрузки AmneziaWG для Windows
-russian.NeedAmnezia=Не найден AmneziaWG для Windows. Rebirth управляет туннелем через него и без него не подключится. Скачайте и установите его (кнопка ниже), затем запустите Rebirth.
 
 [Tasks]
 Name: "autostart"; Description: "{cm:TaskAutostart}"
@@ -76,6 +78,7 @@ Name: "desktopicon"; Description: "{cm:TaskDesktopIcon}"; Flags: unchecked
 
 [Files]
 Source: "..\dist\rebirth-windows\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "third-party-notices.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "autostart.ps1"; DestDir: "{tmp}"; Flags: deleteafterinstall; Tasks: autostart
 
 [Icons]
@@ -95,9 +98,13 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""{#AutostartTask}"" /F
 ; elevation". The program is started with Setup's own (administrator) rights.
 Filename: "{app}\{#AppExe}"; Description: "{cm:RunApp}"; Flags: nowait postinstall skipifsilent runascurrentuser
 Filename: "{app}\{#AppExe}"; Flags: nowait runascurrentuser; Check: WizardSilent
-Filename: "{#AmneziaPage}"; Description: "{cm:OpenAmnezia}"; Flags: shellexec postinstall skipifsilent unchecked; Check: not AmneziaInstalled
 
 [UninstallRun]
+; A tunnel the program left running (it was killed, say) would otherwise stay as a
+; service whose file is gone. Taking away one that is not there is not an error.
+Filename: "{#TunnelExe}"; Parameters: "uninstall awgr-a"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveTunnelA"
+Filename: "{#TunnelExe}"; Parameters: "uninstall awgr-b"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveTunnelB"
+Filename: "{#TunnelExe}"; Parameters: "uninstall awgr-enroll"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveTunnelEnroll"
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""{#AutostartTask}"" /F"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteAutostartTask"
 ; The program makes this one itself, to give the machine its names back after a
 ; restart; with the program gone it has nothing to do.
@@ -109,11 +116,6 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""awg-rotator cleanup""
 Type: filesandordirs; Name: "{commonappdata}\awg-rotator"
 
 [Code]
-function AmneziaInstalled: Boolean;
-begin
-  Result := FileExists(ExpandConstant('{commonpf64}\AmneziaWG\amneziawg.exe'));
-end;
-
 { Asks the copy that is running to leave by the same way as its menu's "Exit"
   and waits until it has: its tunnel comes down and the machine gets its names
   back. Nothing happens when none is running. If it does not answer in half a
@@ -139,11 +141,4 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
     QuitRunningCopy;
-end;
-
-procedure CurPageChanged(CurPageID: Integer);
-begin
-  if (CurPageID = wpFinished) and not AmneziaInstalled then
-    WizardForm.FinishedLabel.Caption :=
-      WizardForm.FinishedLabel.Caption + #13#10#13#10 + CustomMessage('NeedAmnezia');
 end;
