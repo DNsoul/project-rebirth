@@ -843,6 +843,46 @@ void main() {
       ]);
     });
 
+    test(
+      'names the stage it is at, and never goes back to an earlier one',
+      () async {
+        final steps = <ConnectStep?>[];
+        final sub = rig.controller.statusStream.listen((s) {
+          if (s.phase == Phase.connecting) {
+            steps.add(s.step);
+          }
+        });
+        await rig.controller.connect();
+        await sub.cancel();
+
+        expect(rig.status.phase, Phase.connected, reason: rig.status.message);
+        expect(steps, isNotEmpty);
+        expect(steps, everyElement(isNotNull));
+        for (var i = 1; i < steps.length; i++) {
+          expect(
+            steps[i]!.index,
+            greaterThanOrEqualTo(steps[i - 1]!.index),
+            reason: 'step $i of $steps',
+          );
+        }
+        expect(steps.toSet().toList(), ConnectStep.values);
+        expect(rig.status.step, isNull, reason: 'once it is up, no stage');
+      },
+    );
+
+    test('says at which stage it broke', () async {
+      final fresh = await Rig.create();
+      fresh.gist.down = true;
+      await fresh.controller.connect();
+      expect(fresh.status.phase, Phase.failed);
+      expect(fresh.status.step, ConnectStep.settings);
+
+      sto.alive = false;
+      await rig.controller.connect();
+      expect(rig.status.phase, Phase.failed);
+      expect(rig.status.step, ConnectStep.server);
+    });
+
     test('and says where a move is going', () async {
       await rig.controller.connect();
       final waw = rig.fleet.add('198.51.100.7:51820', 31, region: 'waw')

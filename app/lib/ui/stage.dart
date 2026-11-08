@@ -4,8 +4,9 @@ import 'dart:ui' show lerpDouble;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
-import '../core/controller.dart' show Phase;
+import '../core/controller.dart' show ConnectStep, Phase;
 import 'rebirth_mark.dart';
+import 'stage_badge.dart';
 import 'theme.dart';
 
 // The whole window is one button and the light of a fire round it. Nothing is
@@ -14,14 +15,19 @@ import 'theme.dart';
 // The light is a few translucent circles, one outside the other.
 //
 //   off            dark and still. No light at all.
-//   connecting     the fire is being lit: a spark runs round the rim, the light
-//                  flares and flickers fast, sparks lift off.
+//   connecting     the fire is being lit: the light flares and flickers fast,
+//                  sparks lift off, and a spark on the rim has become a small
+//                  disc with the sign of the stage being done (settings, tunnel,
+//                  server, traffic). The disc rests at one of four places on the
+//                  rim and slides to the next when a stage is done; what has been
+//                  done stays lit behind it.
 //   connected      the fire burns: slow breathing light, a few sparks rising.
 //   moving         the fire flares: a spark on the rim, quicker light, more sparks.
 //   server silent  the fire sputters: weak and uneven, the rim is in dashes.
 //   going off      the fire dies down: the light fades, a spark runs backwards.
 //   failed         a red ember with a heartbeat, and an arrow round the rim that
-//                  says "press to try again".
+//                  says "press to try again". The disc stays where it broke, red,
+//                  with a cross.
 
 /// The light of the fire.
 @immutable
@@ -55,6 +61,21 @@ class FireLook {
 
   /// 0 breathes smoothly; 1 beats twice and rests, like a heart.
   final double heartbeat;
+
+  @override
+  bool operator ==(Object other) =>
+      other is FireLook &&
+      other.color == color &&
+      other.level == level &&
+      other.pulse == pulse &&
+      other.period == period &&
+      other.flicker == flicker &&
+      other.embers == embers &&
+      other.heartbeat == heartbeat;
+
+  @override
+  int get hashCode =>
+      Object.hash(color, level, pulse, period, flicker, embers, heartbeat);
 
   static FireLook lerp(FireLook a, FireLook b, double t) => FireLook(
     color: Color.lerp(a.color, b.color, t)!,
@@ -113,6 +134,10 @@ class StageLook {
     required this.spinnerTurns,
     required this.retry,
     required this.fire,
+    this.progress = 0,
+    this.lit = 0,
+    this.badge = 0,
+    this.badgeColor = _amber,
   });
 
   /// The colour of the bird on the button.
@@ -134,15 +159,65 @@ class StageLook {
 
   final FireLook fire;
 
+  /// How far round the rim the stages have got, in quarters of it: 0 is the top,
+  /// 1 a quarter turn on, 4 the whole way. The disc with the sign of the stage
+  /// sits at the end of what is lit.
+  final double progress;
+
+  /// How visible the lit part of the rim is, and the disc: from 0 to 1.
+  final double lit;
+  final double badge;
+
+  /// The colour of the lit part and of the disc.
+  final Color badgeColor;
+
   /// Whether anything moves, so that the clock has to run.
-  bool get animated => fire.level > 0.002 || spinnerAmount > 0.002;
+  bool get animated =>
+      fire.level > 0.002 || spinnerAmount > 0.002 || badge > 0.002;
+
+  @override
+  bool operator ==(Object other) =>
+      other is StageLook &&
+      other.bird == bird &&
+      other.ring == ring &&
+      other.ringGap == ringGap &&
+      other.spinner == spinner &&
+      other.spinnerAmount == spinnerAmount &&
+      other.spinnerTurns == spinnerTurns &&
+      other.retry == retry &&
+      other.fire == fire &&
+      other.progress == progress &&
+      other.lit == lit &&
+      other.badge == badge &&
+      other.badgeColor == badgeColor;
+
+  @override
+  int get hashCode => Object.hash(
+    bird,
+    ring,
+    ringGap,
+    spinner,
+    spinnerAmount,
+    spinnerTurns,
+    retry,
+    fire,
+    progress,
+    lit,
+    badge,
+    badgeColor,
+  );
 
   static const _ash = Color(0xFF6B5E57);
   static const _soot = Color(0xFF3B2D27);
   static const _amber = Color(0xFFF2B134);
   static const _red = Color(0xFFE5483B);
 
-  static StageLook of(Phase phase, {bool lostContact = false}) {
+  /// [step] is the stage of the connection being made, or the one it broke at.
+  static StageLook of(
+    Phase phase, {
+    bool lostContact = false,
+    ConnectStep? step,
+  }) {
     switch (phase) {
       case Phase.idle:
         return const StageLook(
@@ -156,15 +231,19 @@ class StageLook {
           fire: FireLook.out,
         );
       case Phase.connecting:
-        return const StageLook(
+        return StageLook(
           bird: _amber,
-          ring: Color(0x47F2B134),
+          ring: const Color(0x47F2B134),
           ringGap: 0,
-          spinner: Color(0xFFFFC857),
-          spinnerAmount: 1,
+          spinner: const Color(0xFFFFC857),
+          spinnerAmount: 0,
           spinnerTurns: 0.8,
           retry: 0,
-          fire: FireLook(
+          progress: (step ?? ConnectStep.settings).index.toDouble(),
+          lit: 1,
+          badge: 1,
+          badgeColor: _amber,
+          fire: const FireLook(
             color: Color(0xFFFFB347),
             level: 0.5,
             pulse: 0.5,
@@ -201,6 +280,9 @@ class StageLook {
           spinnerAmount: 0,
           spinnerTurns: 0.8,
           retry: 0,
+          progress: 4,
+          lit: 1,
+          badgeColor: Ember.orange,
           fire: FireLook(
             color: Ember.orange,
             level: 0.9,
@@ -219,6 +301,8 @@ class StageLook {
           spinnerAmount: 1,
           spinnerTurns: 1.1,
           retry: 0,
+          progress: 4,
+          badgeColor: Ember.orange,
           fire: FireLook(
             color: Ember.orange,
             level: 0.95,
@@ -237,6 +321,8 @@ class StageLook {
           spinnerAmount: 0.7,
           spinnerTurns: -0.6,
           retry: 0,
+          progress: 4,
+          badgeColor: Ember.orange,
           fire: FireLook(
             color: Color(0xFFCC6A2A),
             level: 0.22,
@@ -246,15 +332,19 @@ class StageLook {
           ),
         );
       case Phase.failed:
-        return const StageLook(
+        return StageLook(
           bird: _red,
-          ring: Color(0x40FF6B5E),
+          ring: const Color(0x40FF6B5E),
           ringGap: 0,
           spinner: Ember.alarm,
           spinnerAmount: 0,
           spinnerTurns: 0.8,
           retry: 1,
-          fire: FireLook(
+          // The disc stays where it broke. Without that, there is no disc.
+          progress: (step ?? ConnectStep.settings).index.toDouble(),
+          badge: step == null ? 0 : 1,
+          badgeColor: Ember.alarm,
+          fire: const FireLook(
             color: Color(0xFFE5322B),
             level: 0.55,
             pulse: 0.85,
@@ -277,6 +367,10 @@ class StageLook {
     spinnerTurns: t < 0.5 ? a.spinnerTurns : b.spinnerTurns,
     retry: lerpDouble(a.retry, b.retry, t)!,
     fire: FireLook.lerp(a.fire, b.fire, t),
+    progress: lerpDouble(a.progress, b.progress, t)!,
+    lit: lerpDouble(a.lit, b.lit, t)!,
+    badge: lerpDouble(a.badge, b.badge, t)!,
+    badgeColor: Color.lerp(a.badgeColor, b.badgeColor, t)!,
   );
 }
 
@@ -296,10 +390,14 @@ class RebirthStage extends StatefulWidget {
     required this.onPressed,
     required this.size,
     this.lostContact = false,
+    this.step,
   });
 
   final Phase phase;
   final bool lostContact;
+
+  /// The stage of the connection being made, or the one it failed at.
+  final ConnectStep? step;
   final VoidCallback onPressed;
 
   /// The width of the button.
@@ -317,6 +415,12 @@ class _RebirthStageState extends State<RebirthStage>
     (elapsed) => _clock.value = elapsed.inMicroseconds / 1e6,
   );
   bool _hover = false;
+
+  // What the disc showed last. The disc fades out after the connection is made or
+  // has failed, and it keeps its sign while it does, though the status has
+  // already forgotten the stage.
+  ConnectStep _lastStep = ConnectStep.settings;
+  bool _broken = false;
 
   @override
   void dispose() {
@@ -345,7 +449,17 @@ class _RebirthStageState extends State<RebirthStage>
 
   @override
   Widget build(BuildContext context) {
-    final target = StageLook.of(widget.phase, lostContact: widget.lostContact);
+    _lastStep = widget.step ?? _lastStep;
+    if (widget.phase == Phase.failed) {
+      _broken = true;
+    } else if (widget.phase == Phase.connecting) {
+      _broken = false;
+    }
+    final target = StageLook.of(
+      widget.phase,
+      lostContact: widget.lostContact,
+      step: widget.step,
+    );
     final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
     final d = widget.size;
 
@@ -398,6 +512,8 @@ class _RebirthStageState extends State<RebirthStage>
                       height: d,
                       child: Stack(
                         alignment: Alignment.center,
+                        // The disc on the rim reaches past the button.
+                        clipBehavior: Clip.none,
                         children: [
                           DecoratedBox(
                             decoration: const BoxDecoration(
@@ -421,6 +537,19 @@ class _RebirthStageState extends State<RebirthStage>
                               colors: RebirthColors.solid(look.bird),
                             ),
                           ),
+                          if (look.badge > 0.01)
+                            IgnorePointer(
+                              child: StageBadge(
+                                diameter: d,
+                                progress: look.progress,
+                                amount: look.badge,
+                                color: look.badgeColor,
+                                step: _lastStep,
+                                broken: _broken,
+                                clock: _clock,
+                                time: time,
+                              ),
+                            ),
                           Material(
                             key: const ValueKey('power-button'),
                             color: Colors.transparent,
@@ -556,6 +685,9 @@ class RingPainter extends CustomPainter {
     final rect = Rect.fromCircle(center: centre, radius: radius);
 
     _base(canvas, rect);
+    if (look.lit > 0.01) {
+      _lit(canvas, rect);
+    }
     if (look.spinnerAmount > 0.01) {
       _spinner(canvas, centre, rect);
     }
@@ -586,6 +718,19 @@ class RingPainter extends CustomPainter {
     for (var i = 0; i < pieces; i++) {
       canvas.drawArc(rect, i * step, step * (1 - look.ringGap), false, paint);
     }
+  }
+
+  /// The part of the rim the stages have got through: from the top, clockwise,
+  /// as far as the disc.
+  void _lit(Canvas canvas, Rect rect) {
+    final sweep = look.progress.clamp(0.0, 4.0) * math.pi / 2;
+    if (sweep < 0.02) {
+      return;
+    }
+    final paint = _stroke(
+      look.badgeColor.withValues(alpha: look.lit.clamp(0.0, 1.0)),
+    )..strokeCap = StrokeCap.butt;
+    canvas.drawArc(rect, -math.pi / 2, sweep, false, paint);
   }
 
   /// A short arc that runs round the ring.

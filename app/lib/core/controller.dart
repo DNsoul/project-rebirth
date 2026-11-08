@@ -15,6 +15,23 @@ import 'updater.dart' show ReleaseSource;
 
 enum Phase { idle, connecting, connected, switching, disconnecting, failed }
 
+/// The four stages of making a connection, in the order they come. The button
+/// shows which one is being done (`stage.dart`); the words of each are in
+/// [AppStatus.message].
+enum ConnectStep {
+  /// Looking at the machine and reading the settings.
+  settings,
+
+  /// Putting the tunnel in place.
+  tunnel,
+
+  /// Waiting for the server to answer (and, the first time, registering).
+  server,
+
+  /// Checking that traffic goes through (and turning on the protection of names).
+  traffic,
+}
+
 /// What the app tells the user.
 class AppStatus {
   const AppStatus(
@@ -24,9 +41,14 @@ class AppStatus {
     this.since,
     this.lostContact = false,
     this.note = '',
+    this.step,
   });
 
   final Phase phase;
+
+  /// While connecting, the furthest stage reached; after a failure, the one it
+  /// failed at. It never goes back within one attempt. Null otherwise.
+  final ConnectStep? step;
 
   /// What is happening, or what went wrong, in words for the user.
   final String message;
@@ -193,11 +215,21 @@ class ConnectionController implements ConnectionView, ReleaseSource {
   /// Says which step is being taken, without changing anything else the screen
   /// shows. The person watching is told what the app is doing, not left with a
   /// spinner.
-  void _progress(String message) {
+  ///
+  /// [step], when given, is the stage this message belongs to. The stage only
+  /// moves forward: a second try at the tunnel after a registration is still the
+  /// stage the first one reached.
+  void _progress(String message, [ConnectStep? step]) {
     final s = _status;
     if (s.phase == Phase.idle || s.phase == Phase.failed) {
       return;
     }
+    final before = s.step;
+    final reached = s.phase != Phase.connecting
+        ? null
+        : (step != null && (before == null || step.index > before.index)
+              ? step
+              : before);
     _emit(
       AppStatus(
         s.phase,
@@ -206,6 +238,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         since: s.since,
         lostContact: s.lostContact,
         note: s.note,
+        step: reached,
       ),
     );
   }
@@ -260,7 +293,13 @@ class ConnectionController implements ConnectionView, ReleaseSource {
       return Future<void>.value();
     }
     // The screen answers before anything slow starts.
-    _emit(const AppStatus(Phase.connecting, message: 'Готовлюсь…'));
+    _emit(
+      const AppStatus(
+        Phase.connecting,
+        message: 'Готовлюсь…',
+        step: ConnectStep.settings,
+      ),
+    );
     return _exclusive('connect', () async {
       if (_stopping) {
         return;
@@ -284,7 +323,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         lap('removing leftovers');
         token.check();
 
-        _progress('Читаю настройки…');
+        _progress('Читаю настройки…', ConnectStep.settings);
         final body = await _fetchBody(force: true, token: token);
         lap('settings');
 
@@ -306,6 +345,8 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         }
       } catch (e) {
         _log('connect failed: $e');
+        // Where it got to, so that the button can show where it broke.
+        final brokeAt = _status.step;
         if (started) {
           // Undoing what was started takes a moment; the screen says so rather
           // than keeping "connecting" in front of someone who already has the
@@ -313,7 +354,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
           _progress('Убираю за собой…');
           await _teardownQuietly();
         }
-        _emit(AppStatus(Phase.failed, message: explain(e)));
+        _emit(AppStatus(Phase.failed, message: explain(e), step: brokeAt));
       }
     });
   }
@@ -697,7 +738,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
 
     // When moving, what is said starts with where to.
     final tag = previous == null ? '' : '${regionLabel(body.region)}: ';
-    void say(String text) => _progress('$tag$text');
+    void say(String text, [ConnectStep? step]) => _progress('$tag$text', step);
 
     Future<bool> attempt(
       String address,
@@ -711,11 +752,11 @@ class ConnectionController implements ConnectionView, ReleaseSource {
       );
       try {
         token.check();
-        say('Поднимаю туннель…');
+        say('Поднимаю туннель…', ConnectStep.tunnel);
         await tunnel.install(name: slot, conf: conf);
         token.check();
 
-        say('Жду ответа сервера…');
+        say('Жду ответа сервера…', ConnectStep.server);
         if (!await _waitHandshake(slot, handshakeWithin, token)) {
           _log(
             'no handshake with ${body.endpoint} within ${handshakeWithin.inSeconds}s',
@@ -727,7 +768,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         // The handshake shows the server knows the key; only an answer from the
         // resolver shows it also knows the address.
         if (resolver != null) {
-          say('Проверяю, что трафик идёт…');
+          say('Проверяю, что трафик идёт…', ConnectStep.traffic);
           if (!await token.guard(
             probe.resolverAnswers(resolver, answerWithin),
           )) {
@@ -790,7 +831,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     token.check();
     try {
       if (resolver != null && _usesStandIns(resolver)) {
-        say('Включаю защиту имён…');
+        say('Включаю защиту имён…', ConnectStep.traffic);
         _dnsMayBeOn = true;
         await dns.enable(resolver);
         _log('every name now goes to $resolver');
@@ -852,7 +893,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     ConfigBody body,
     _Identity identity,
     CancelToken token,
-    void Function(String) say,
+    void Function(String, [ConnectStep?]) say,
   ) async {
     final info = body.enroll;
     if (info == null) {
@@ -871,6 +912,8 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     final transport = transportFactory();
     try {
       token.check();
+      // The same words as just before: only the stage moves on, to the tunnel.
+      say('Регистрирую это устройство…', ConnectStep.tunnel);
       await tunnel.install(name: enrollSlot, conf: conf);
       token.check();
       // A service that is running is not yet a tunnel that carries anything: the
@@ -878,14 +921,14 @@ class ConnectionController implements ConnectionView, ReleaseSource {
       // sign that the server has answered, and by then the machine is ready. It is
       // waited for, but not required: if it cannot be seen, the datagrams are
       // sent anyway, since they are what starts the handshake in the first place.
-      say('Связываюсь с сервером…');
+      say('Связываюсь с сервером…', ConnectStep.server);
       final shook = await _waitHandshake(
         enrollSlot,
         const Duration(seconds: 15),
         token,
       );
       _log('registration: tunnel up, handshake ${shook ? 'seen' : 'not seen'}');
-      say('Регистрирую это устройство…');
+      say('Регистрирую это устройство…', ConnectStep.server);
       return await registerDevice(
         transport: transport,
         contentKey: bootstrap.contentKey,

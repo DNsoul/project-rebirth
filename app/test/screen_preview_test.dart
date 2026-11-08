@@ -100,7 +100,38 @@ void main() {
       const _Shot('1-idle', AppStatus(Phase.idle)),
       const _Shot(
         '2-connecting',
-        AppStatus(Phase.connecting, message: 'Поднимаю туннель…'),
+        AppStatus(
+          Phase.connecting,
+          message: 'Читаю настройки…',
+          step: ConnectStep.settings,
+        ),
+        at: 350,
+      ),
+      const _Shot(
+        '2b-connecting',
+        AppStatus(
+          Phase.connecting,
+          message: 'Поднимаю туннель…',
+          step: ConnectStep.tunnel,
+        ),
+        at: 350,
+      ),
+      const _Shot(
+        '2c-connecting',
+        AppStatus(
+          Phase.connecting,
+          message: 'Жду ответа сервера…',
+          step: ConnectStep.server,
+        ),
+        at: 350,
+      ),
+      const _Shot(
+        '2d-connecting',
+        AppStatus(
+          Phase.connecting,
+          message: 'Проверяю, что трафик идёт…',
+          step: ConnectStep.traffic,
+        ),
         at: 350,
       ),
       _Shot(
@@ -129,6 +160,16 @@ void main() {
           Phase.failed,
           message:
               'Сервер не ответил на регистрацию. Проверьте интернет и повторите.',
+          step: ConnectStep.server,
+        ),
+        at: 140,
+      ),
+      const _Shot(
+        '7b-failed-first-step',
+        AppStatus(
+          Phase.failed,
+          message: 'Нет связи с GitHub. Проверьте интернет и повторите.',
+          step: ConnectStep.settings,
         ),
         at: 140,
       ),
@@ -215,8 +256,26 @@ void main() {
       await render([s], window, 'screen-${s.name}.png');
     }
     // And the same on a phone, for the shape of it.
-    await render([shots[2]], const Size(360, 780), 'phone-connected.png');
-    await render([shots[7]], const Size(360, 780), 'phone-update.png');
-    await render([shots[6]], const Size(360, 640), 'phone-failed-short.png');
+    _Shot named(String name) => shots.firstWhere((s) => s.name == name);
+    await render(
+      [named('3-connected')],
+      const Size(360, 780),
+      'phone-connected.png',
+    );
+    await render(
+      [named('8-connected-update')],
+      const Size(360, 780),
+      'phone-update.png',
+    );
+    await render(
+      [named('7-failed')],
+      const Size(360, 640),
+      'phone-failed-short.png',
+    );
+    await render(
+      [named('2c-connecting')],
+      const Size(360, 780),
+      'phone-connecting.png',
+    );
   });
 }
