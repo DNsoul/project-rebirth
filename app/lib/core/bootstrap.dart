@@ -15,6 +15,7 @@ class Bootstrap {
     required this.backupPub,
     required this.contentKey,
     this.gistOwner = '',
+    this.releaseMirrors = const [],
   });
 
   factory Bootstrap.fromJson(Map<String, Object?> j) {
@@ -30,7 +31,40 @@ class Bootstrap {
       rootPub: field('root_pub'),
       backupPub: field('backup_pub'),
       contentKey: decode(field('content_key'), contentKeySize),
+      releaseMirrors: _mirrors(j['release_mirrors']),
     );
+  }
+
+  /// The templates of the addresses of the installers' copies, checked: this is
+  /// data the build was made with, so a mistake in it is a mistake of the build and
+  /// is refused loudly instead of being quietly ignored.
+  static List<String> _mirrors(Object? raw) {
+    if (raw == null) return const [];
+    if (raw is! List) {
+      throw ProtoException('the bundled "release_mirrors" is not a list');
+    }
+    final out = <String>[];
+    for (final item in raw) {
+      // Looked at with the braces filled in: a template has them, an address
+      // does not.
+      final uri = item is String
+          ? Uri.tryParse(
+              item.replaceAll('{file}', 'f').replaceAll('{version}', '1'),
+            )
+          : null;
+      if (item is! String ||
+          uri == null ||
+          uri.scheme != 'https' ||
+          uri.host.isEmpty ||
+          !item.contains('{file}')) {
+        throw ProtoException(
+          'the bundled "release_mirrors" has an entry that is not an https '
+          'address with {file} in it: "$item"',
+        );
+      }
+      out.add(item);
+    }
+    return out;
   }
 
   factory Bootstrap.parse(String text) {
@@ -51,6 +85,14 @@ class Bootstrap {
   /// The gist's owner, which makes the raw file addresses usable as a second
   /// way to read it when the API is out of requests.
   final String gistOwner;
+
+  /// Other places the installers of a release are kept, as templates of their
+  /// addresses: `{version}` is the version of the release and `{file}` the name of
+  /// the installer, both from the signed announcement. An installer is only ever
+  /// installed if its size and hash are the signed ones, so these places need no
+  /// trust. They are here, in what the build is made with, and not in the
+  /// announcement, so that they cost the announcement and the older apps nothing.
+  final List<String> releaseMirrors;
 
   final String rootPub;
   final String backupPub;

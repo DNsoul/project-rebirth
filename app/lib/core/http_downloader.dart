@@ -95,6 +95,13 @@ class HttpDownloader implements Downloader {
     }
   }
 
+  @override
+  bool canUse(DownloadRoute route, Uri url) =>
+      route != DownloadRoute.api || _isGithubRelease(url);
+
+  static bool _isGithubRelease(Uri url) =>
+      url.host == 'github.com' && _githubDownload.hasMatch(url.path);
+
   void _requireSecure(Uri at) {
     if (at.scheme != 'https' && !(allowPlainHttp && at.scheme == 'http')) {
       throw UpdateException(

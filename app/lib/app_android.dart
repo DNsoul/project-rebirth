@@ -96,6 +96,7 @@ Future<void> runAndroid(List<String> args) async {
     downloader: HttpDownloader(),
     installer: AndroidUpdateInstaller(MethodChannelApkBridge()),
     directory: Directory('$dataDir/updates'),
+    mirrors: bootstrap.releaseMirrors,
     log: log,
   );
 

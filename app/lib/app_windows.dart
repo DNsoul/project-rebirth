@@ -131,6 +131,7 @@ Future<void> runWindows(List<String> args) async {
     downloader: HttpDownloader(),
     installer: WindowsUpdateInstaller(leave: quit, log: log),
     directory: Directory('$dataDir\\updates'),
+    mirrors: bootstrap.releaseMirrors,
     log: log,
   );
 

@@ -47,6 +47,19 @@ class FakeDownloader implements Downloader {
   /// throw, or the bytes to write.
   final perRoute = <DownloadRoute, Object>{};
 
+  /// The addresses it was asked for, in order, with the way.
+  final asked = <(DownloadRoute, Uri)>[];
+
+  /// What an address gives instead of the common [fail] or [bytes] (the first
+  /// match of its text wins).
+  final perAddress = <String, Object>{};
+
+  /// The ways it cannot use for an address.
+  bool Function(DownloadRoute route, Uri url) usable = (_, _) => true;
+
+  @override
+  bool canUse(DownloadRoute route, Uri url) => usable(route, url);
+
   @override
   Future<void> download(
     Uri url,
@@ -59,9 +72,15 @@ class FakeDownloader implements Downloader {
     lastUrl = url;
     lastLimit = limit;
     routesAsked.add(route);
+    asked.add((route, url));
     final g = gate;
     if (g != null) await g.future;
-    final special = perRoute[route];
+    final byAddress = perAddress.entries
+        .where((e) => url.toString().contains(e.key))
+        .map((e) => e.value)
+        .firstOrNull;
+    if (byAddress is Exception) throw byAddress;
+    final special = byAddress ?? perRoute[route];
     if (special is Exception) throw special;
     final f = fail;
     if (f != null) throw f;
@@ -184,12 +203,14 @@ void main() {
     dir.deleteSync(recursive: true);
   });
 
-  List<String> filesLeft() {
-    final d = Directory('${dir.path}${Platform.pathSeparator}updates');
+  List<String> filesLeftIn(String folder) {
+    final d = Directory('${dir.path}${Platform.pathSeparator}$folder');
     return d.existsSync()
         ? [for (final f in d.listSync()) f.uri.pathSegments.last]
         : <String>[];
   }
+
+  List<String> filesLeft() => filesLeftIn('updates');
 
   group('whether there is anything to offer', () {
     test('nothing, until something is announced', () {
@@ -494,6 +515,138 @@ void main() {
         expect(only.status!.phase, UpdatePhase.failed);
         await only.dispose();
       });
+    });
+
+    group('copies of the installer in other places', () {
+      const copy = 'https://mirror.example/pkg/{version}/{file}';
+      const copyAt = 'https://mirror.example/pkg/1.2.0/Rebirth-Setup-1.2.0.exe';
+
+      UpdateController withCopies(List<String> templates) => UpdateController(
+        releases: releases,
+        os: osWindows,
+        currentBuild: 1,
+        downloader: downloader,
+        installer: installer,
+        directory: Directory('${dir.path}${Platform.pathSeparator}copies'),
+        mirrors: templates,
+        log: logs.add,
+      );
+
+      test('there is only the announced address when there are none', () async {
+        await releases.announce(await releaseOf(installerBytes));
+        await updates.install();
+        expect(downloader.asked.map((a) => a.$2.toString()), [
+          'https://example.org/Rebirth-Setup-1.2.0.exe',
+        ]);
+      });
+
+      test(
+        'a copy is tried when the announced address does not work',
+        () async {
+          final c = withCopies([copy]);
+          await releases.announce(await releaseOf(installerBytes));
+          downloader.perAddress['example.org'] = UpdateException(
+            'Сервер упал.',
+          );
+
+          await c.install();
+
+          expect(downloader.asked.map((a) => a.$2.toString()), [
+            'https://example.org/Rebirth-Setup-1.2.0.exe',
+            copyAt,
+          ]);
+          expect(installer.started, hasLength(1));
+          expect(
+            logs.join('\n'),
+            allOf(contains('mirror.example'), contains('example.org')),
+            reason: 'the log says where it came from',
+          );
+          await c.dispose();
+        },
+      );
+
+      test(
+        'by way first, address second: a copy comes before the next way',
+        () async {
+          final c = withCopies([copy]);
+          await releases.announce(await releaseOf(installerBytes));
+          downloader.fail = UpdateException('Нигде нет.');
+          // The way by GitHub's API is only for the announced address.
+          downloader.usable = (route, url) =>
+              route != DownloadRoute.api || url.host == 'example.org';
+
+          await c.install();
+
+          expect(downloader.asked.map((a) => '${a.$1.name} ${a.$2.host}'), [
+            'usual example.org',
+            'usual mirror.example',
+            'api example.org',
+            'direct example.org',
+            'direct mirror.example',
+          ]);
+          expect(c.status!.phase, UpdatePhase.failed);
+          expect(
+            c.status!.message,
+            'Нигде нет.',
+            reason: 'the first reason is the one told',
+          );
+          await c.dispose();
+        },
+      );
+
+      test('a copy that gives another file is not installed', () async {
+        final c = withCopies([copy]);
+        await releases.announce(await releaseOf(installerBytes));
+        downloader.perAddress['example.org'] = UpdateException('Упал.');
+        downloader.perAddress['mirror.example'] = Uint8List.fromList(
+          List.of(installerBytes)..[5] ^= 0xFF,
+        );
+
+        await c.install();
+
+        expect(installer.started, isEmpty);
+        expect(c.status!.phase, UpdatePhase.failed);
+        expect(filesLeftIn('copies'), isEmpty);
+        await c.dispose();
+      });
+
+      test('the file name and version come from the announcement', () async {
+        final c = withCopies(['https://a.example/{version}/x/{file}']);
+        await releases.announce(
+          await releaseOf(installerBytes, version: '2.0.1', build: 20),
+        );
+        downloader.perAddress['example.org'] = UpdateException('Упал.');
+
+        await c.install();
+
+        expect(
+          downloader.asked.last.$2.toString(),
+          'https://a.example/2.0.1/x/Rebirth-Setup-2.0.1.exe',
+        );
+        await c.dispose();
+      });
+
+      test(
+        'a copy that is not https, or is the announced address, is skipped',
+        () async {
+          final c = withCopies([
+            'http://plain.example/{file}',
+            'https://example.org/{file}',
+            copy,
+            copy,
+          ]);
+          await releases.announce(await releaseOf(installerBytes));
+          downloader.perAddress['example.org'] = UpdateException('Упал.');
+
+          await c.install();
+
+          expect(downloader.asked.map((a) => a.$2.toString()), [
+            'https://example.org/Rebirth-Setup-1.2.0.exe',
+            copyAt,
+          ]);
+          await c.dispose();
+        },
+      );
     });
 
     test('says what went wrong with starting the installer', () async {

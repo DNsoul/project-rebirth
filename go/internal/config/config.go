@@ -14,12 +14,16 @@ const (
 	SecretsFile   = "secrets.env"
 	VultrKeyName  = "VULTR_API_KEY"
 	GitHubKeyName = "GITHUB_TOKEN"
+	GitLabKeyName = "GITLAB_TOKEN"
 )
 
-// Secrets are the two credentials the operator supplies.
+// Secrets are the credentials the operator supplies. The first two are needed
+// for everything; the GitLab token only for keeping a second copy of the
+// installers there.
 type Secrets struct {
 	VultrAPIKey string
 	GitHubToken string
+	GitLabToken string // optional: needed only to upload to a GitLab mirror
 }
 
 // Root returns the project root. It honours AWGCTL_DIR, otherwise it walks up
@@ -76,6 +80,7 @@ func LoadSecrets(root string) (Secrets, error) {
 	s := Secrets{
 		VultrAPIKey: pick(os.Getenv(VultrKeyName), values[VultrKeyName]),
 		GitHubToken: pick(os.Getenv(GitHubKeyName), values[GitHubKeyName]),
+		GitLabToken: pick(os.Getenv(GitLabKeyName), values[GitLabKeyName]),
 	}
 	var missing []string
 	if s.VultrAPIKey == "" {

@@ -409,6 +409,32 @@ void main() {
     });
   });
 
+  group('which addresses a way is for', () {
+    final d = HttpDownloader();
+    final release = Uri.parse(
+      'https://github.com/o/r/releases/download/v1/file.bin',
+    );
+
+    test('the usual way and the one round the tunnel are for any address', () {
+      for (final url in [release, Uri.parse('https://mirror.example/f.exe')]) {
+        expect(d.canUse(DownloadRoute.usual, url), isTrue);
+        expect(d.canUse(DownloadRoute.direct, url), isTrue);
+      }
+    });
+
+    test('the API is only for the release links of GitHub', () {
+      expect(d.canUse(DownloadRoute.api, release), isTrue);
+      for (final url in [
+        'https://mirror.example/f.exe',
+        'https://github.com/o/r/archive/v1.zip',
+        'https://github.com.evil.example/o/r/releases/download/v1/file.bin',
+        'https://gitlab.com/api/v4/projects/1/packages/generic/rebirth/1.0/f.exe',
+      ]) {
+        expect(d.canUse(DownloadRoute.api, Uri.parse(url)), isFalse, reason: url);
+      }
+    });
+  });
+
   group('the route by the API', () {
     HttpDownloader viaApi() => HttpDownloader(
       allowPlainHttp: true,

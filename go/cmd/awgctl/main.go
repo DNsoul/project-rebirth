@@ -53,6 +53,7 @@ func main() {
 		"lab-down":      cmdLabDown,
 		"status":        cmdStatus,
 		"trust":         cmdTrust,
+		"mirror":        cmdMirror,
 		"export-backup": cmdExportBackup,
 	}
 	fn, ok := cmds[os.Args[1]]
@@ -81,6 +82,7 @@ func usage() {
   command         приказать серверу: move | move-region <регион> | status | revoke <N>
   events          показать, что сервер сообщает о себе
   release         объявить новую версию приложений: publish | show
+  mirror          запасное место для установщиков (GitLab): set gitlab -project владелец/имя | show
   sync            узнать, какой сервер сейчас текущий (после самостоятельного переезда)
   gc              найти и удалить лишние серверы, которые никому не нужны
   auto            включить или выключить самостоятельные переезды (-age, -block)
@@ -342,13 +344,7 @@ func cmdTrust(args []string) error {
 		return errors.New("gist ещё не создан")
 	}
 
-	bundle := struct {
-		proto.Trust
-		GistID    string `json:"gist_id"`
-		GistOwner string `json:"gist_owner"`
-	}{trust, st.GistID, st.GistOwner}
-
-	raw, err := json.MarshalIndent(bundle, "", "  ")
+	raw, err := json.MarshalIndent(newBootstrapBundle(trust, st), "", "  ")
 	if err != nil {
 		return err
 	}

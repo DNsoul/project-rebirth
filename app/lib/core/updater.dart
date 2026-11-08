@@ -48,6 +48,11 @@ abstract class Downloader {
     void Function(int received)? onProgress,
     DownloadRoute route = DownloadRoute.usual,
   });
+
+  /// Whether [route] makes sense for [url]. The way by GitHub's API, for one,
+  /// is only for GitHub's release links; trying it on any other address would
+  /// only fail, and leave a line in the log for nothing.
+  bool canUse(DownloadRoute route, Uri url);
 }
 
 /// Hands a downloaded installer over to the system.
@@ -135,6 +140,7 @@ class UpdateController implements UpdateView {
     required this.installer,
     required this.directory,
     this.routes = DownloadRoute.values,
+    this.mirrors = const [],
     void Function(String line)? log,
   }) : _log = log ?? ((_) {}) {
     _sub = releases.releaseStream.listen((_) => _refresh());
@@ -157,6 +163,11 @@ class UpdateController implements UpdateView {
 
   /// The ways to fetch the file, in the order they are tried.
   final List<DownloadRoute> routes;
+
+  /// Templates of the addresses of other copies of the installers (see
+  /// `Bootstrap.releaseMirrors`): `{version}` and `{file}` are filled in from the
+  /// announcement. They are tried after the announced address, each way in turn.
+  final List<String> mirrors;
 
   final void Function(String) _log;
 
@@ -227,19 +238,29 @@ class UpdateController implements UpdateView {
       final file = await _prepare(offer);
       part = File('${file.path}.part');
 
-      // Each way is tried until one gives the announced file. A way that fails,
-      // whether by not answering or by giving a file that is not the announced
-      // one, is followed by the next. When none works, the person is told what
-      // went wrong with the first, the way things are usually done.
+      // Each way, at each address, is tried until one gives the announced file:
+      // the announced address first and then the copies, by the usual way, then
+      // the same by the next way. Going by way first, not by address, means that
+      // a copy is reached by the usual way before the announced address has been
+      // tried three ways over when it is the place that is down. An attempt that
+      // fails, whether by not answering or by giving a file that is not the
+      // announced one, is followed by the next. When none works, the person is
+      // told what went wrong with the first, the way things are usually done.
+      final attempts = [
+        for (final route in routes)
+          for (final url in _addresses(offer))
+            if (downloader.canUse(route, url)) (route, url),
+      ];
       UpdateException? firstFailure;
-      for (final route in routes) {
+      var got = false;
+      for (final (index, (route, url)) in attempts.indexed) {
         var shown = 0.0;
-        if (route != routes.first) {
+        if (index > 0) {
           _emit(UpdateStatus(UpdatePhase.downloading, offer));
         }
         try {
           await downloader.download(
-            Uri.parse(offer.asset.url),
+            url,
             part,
             limit: offer.asset.size,
             route: route,
@@ -254,19 +275,24 @@ class UpdateController implements UpdateView {
             },
           );
           await _verify(part, offer.asset);
-          if (route != routes.first) {
-            _log('update: the file came by the ${route.name} route');
+          if (index > 0) {
+            _log(
+              'update: the file came by the ${route.name} route (${url.host})',
+            );
           }
-          firstFailure = null;
+          got = true;
           break;
         } on UpdateException catch (e) {
-          _log('update: the ${route.name} route failed: ${e.message}');
+          _log(
+            'update: the ${route.name} route failed (${url.host}): ${e.message}',
+          );
           firstFailure ??= e;
           await _discard(part);
         }
       }
-      if (firstFailure != null) {
-        throw firstFailure;
+      if (!got) {
+        throw firstFailure ??
+            UpdateException('Не удалось скачать обновление. Повторите позже.');
       }
       await part.rename(file.path);
       part = null;
@@ -299,6 +325,28 @@ class UpdateController implements UpdateView {
       await file.delete();
     }
   });
+
+  /// Where the installer can be had: the announced address, then the copies
+  /// the build knows of, with the version and the file name from the
+  /// announcement put in. Each is a different place, the same file.
+  List<Uri> _addresses(UpdateOffer offer) {
+    final announced = Uri.parse(offer.asset.url);
+    final name = announced.pathSegments.isEmpty
+        ? ''
+        : announced.pathSegments.last;
+    final out = <Uri>[announced];
+    for (final template in mirrors) {
+      final u = Uri.tryParse(
+        template
+            .replaceAll('{version}', Uri.encodeComponent(offer.version))
+            .replaceAll('{file}', Uri.encodeComponent(name)),
+      );
+      if (u != null && u.scheme == 'https' && !out.contains(u)) {
+        out.add(u);
+      }
+    }
+    return out;
+  }
 
   void _fail(UpdateOffer offer, String message) {
     _log('update failed: $message');

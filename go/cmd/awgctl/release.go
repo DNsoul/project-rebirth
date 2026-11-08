@@ -215,6 +215,7 @@ func cmdReleasePublish(args []string) error {
 	androidURL := fs.String("android-url", "", "адрес установщика Android, если не base-url плюс имя файла")
 	dryRun := fs.Bool("dry-run", false, "показать, что будет объявлено, и ничего не публиковать")
 	force := fs.Bool("force", false, "не сверять с pubspec.yaml и с уже опубликованной сборкой")
+	noMirror := fs.Bool("no-mirror", false, "не загружать установщики на запасные места (awgctl mirror)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -265,21 +266,35 @@ func cmdReleasePublish(args []string) error {
 	}
 	fmt.Print(describeRelease(rel))
 
+	st, stErr := store.Load(root)
 	if *dryRun {
+		if stErr == nil && len(st.Mirrors) > 0 && !*noMirror {
+			fmt.Print("\nКопии установщиков будут загружены и на запасные места:\n" + describeMirrors(st))
+		}
 		fmt.Println("\nЭто пробный прогон: ничего не опубликовано.")
 		return nil
 	}
 
-	st, err := store.Load(root)
-	if err != nil {
-		return err
+	if stErr != nil {
+		return stErr
 	}
 	secrets, err := config.LoadSecrets(root)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	// Long enough for tens of megabytes to go to a mirror and come back.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
+
+	// The copies first: the announcement is what sends the apps to look for
+	// them, so they must be there, and checked, before it is made.
+	if !*noMirror && len(st.Mirrors) > 0 {
+		fmt.Println("\nКопии на запасных местах:")
+		if err := uploadToMirrors(ctx, os.Stdout, st, secrets.GitLabToken, rel, req.Files); err != nil {
+			return fmt.Errorf("%w\n(объявить можно и без копий: -no-mirror)", err)
+		}
+	}
+
 	replaced, err := publishRelease(ctx, gist.New(secrets.GitHubToken), st, rel, *force)
 	if err != nil {
 		return err

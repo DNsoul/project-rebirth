@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"awgrotator/internal/gitlab"
 	"awgrotator/internal/proto"
 )
 
@@ -49,6 +50,21 @@ type Server struct {
 	CreatedAt int64  `json:"created_at,omitempty"`
 }
 
+// Mirror is another place the installers of a release are kept, besides GitHub.
+// Nothing about it is secret: it is a public project, and the apps are told where
+// it is by the bootstrap data they are built with. An installer is only ever
+// installed if its size and hash are the signed ones, so the place needs no trust.
+type Mirror struct {
+	Kind      string `json:"kind"`       // "gitlab"
+	Base      string `json:"base"`       // https://gitlab.com
+	ProjectID int64  `json:"project_id"` // the numeric id, which survives a rename
+	Path      string `json:"path"`       // owner/name, for people
+	Package   string `json:"package"`    // the generic package the installers go under
+}
+
+// KindGitLab is the one kind of mirror there is so far.
+const KindGitLab = "gitlab"
+
 // State is the whole local state file.
 type State struct {
 	Version       int    `json:"version"`
@@ -71,6 +87,33 @@ type State struct {
 	// replace themselves count on from there, so it can lag behind the real
 	// number; it is a label, not something anything depends on.
 	Generation int `json:"generation,omitempty"`
+
+	// Mirrors are the other places the installers are kept.
+	Mirrors []Mirror `json:"mirrors,omitempty"`
+}
+
+// SetMirror adds a mirror, or replaces the one of the same kind.
+func (s *State) SetMirror(m Mirror) {
+	for i := range s.Mirrors {
+		if s.Mirrors[i].Kind == m.Kind {
+			s.Mirrors[i] = m
+			return
+		}
+	}
+	s.Mirrors = append(s.Mirrors, m)
+}
+
+// ReleaseMirrors are the addresses of the mirrors' copies of an installer as the
+// apps are built to know them: `{version}` and `{file}` are filled in by the app
+// from the signed announcement.
+func (s *State) ReleaseMirrors() []string {
+	var out []string
+	for _, m := range s.Mirrors {
+		if m.Kind == KindGitLab {
+			out = append(out, gitlab.PackageTemplate(m.Base, m.ProjectID, m.Package))
+		}
+	}
+	return out
 }
 
 // Dir returns the state directory inside the project root.

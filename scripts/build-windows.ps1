@@ -26,11 +26,9 @@ $bootstrap = Join-Path $app 'assets\bootstrap.json'
 # not worth waiting for the rest of.
 & (Join-Path $PSScriptRoot 'build-tunnel.ps1')
 
-if (-not (Test-Path $bootstrap)) {
-    Write-Host 'Нет app\assets\bootstrap.json, делаю через awgctl…'
-    & (Join-Path $root 'dist\awgctl.exe') trust -o $bootstrap
-    if ($LASTEXITCODE -ne 0) { throw 'awgctl trust не сработал' }
-}
+# Made afresh every time, so that what was added since (a place for the
+# installers, say) is in this build.
+& (Join-Path $PSScriptRoot 'prepare-bootstrap.ps1')
 
 # Whether Windows asks for administrator rights is decided when the project is
 # configured, from the environment. The configuration is only redone when the

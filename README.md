@@ -56,6 +56,7 @@ Android с одной кнопкой. Серверы заменяют себя �
 ```
 VULTR_API_KEY=...
 GITHUB_TOKEN=...
+GITLAB_TOKEN=...   # необязательно: только для запасного места установщиков на GitLab
 ```
 
 ```powershell
@@ -68,6 +69,7 @@ dist\awgctl.exe trust -o app\assets\bootstrap.json   # доступ, с кото
 dist\awgctl.exe status               # ключи, gist, серверы
 dist\awgctl.exe command move         # приказать серверу переехать сейчас
 dist\awgctl.exe release publish ...  # объявить новую версию приложений
+dist\awgctl.exe mirror set gitlab -project владелец/имя   # запасное место для установщиков
 ```
 
 Остальные команды: `awgctl` без аргументов. Состояние, включая все ключи, лежит в

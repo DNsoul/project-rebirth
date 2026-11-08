@@ -451,6 +451,45 @@ void main() {
         reason: 'a short content key',
       );
     });
+
+    group('other places for the installers', () {
+      String withMirrors(String json) =>
+          sample.replaceFirst('"gist_id"', '"release_mirrors":$json,"gist_id"');
+
+      test('there are none unless the build says so', () {
+        expect(Bootstrap.parse(sample).releaseMirrors, isEmpty);
+      });
+
+      test('are read as they are written, in order', () {
+        final b = Bootstrap.parse(
+          withMirrors(
+            '["https://gitlab.com/api/v4/projects/1/packages/generic/rebirth/{version}/{file}",'
+            '"https://other.example/{file}"]',
+          ),
+        );
+        expect(b.releaseMirrors, [
+          'https://gitlab.com/api/v4/projects/1/packages/generic/rebirth/{version}/{file}',
+          'https://other.example/{file}',
+        ]);
+      });
+
+      test('a mistake in them is refused, not quietly dropped', () {
+        for (final bad in [
+          '"https://x.example/{file}"', // not a list
+          '[1]',
+          '["http://x.example/{file}"]', // not https
+          '["https://x.example/file.exe"]', // no {file}
+          '["https:///{file}"]', // no host
+          '["not an address {file}"]',
+        ]) {
+          expect(
+            () => Bootstrap.parse(withMirrors(bad)),
+            throwsA(isA<ProtoException>()),
+            reason: bad,
+          );
+        }
+      });
+    });
   });
 
   group('place names', () {

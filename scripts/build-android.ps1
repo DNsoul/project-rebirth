@@ -44,11 +44,9 @@ foreach ($abi in $abis) {
     if (-not (Test-Path $lib)) { throw "Нет $lib. Собери: .\scripts\build-android-lib.ps1" }
 }
 $bootstrap = Join-Path $app 'assets\bootstrap.json'
-if (-not (Test-Path $bootstrap)) {
-    Write-Host 'Нет app\assets\bootstrap.json, делаю через awgctl…'
-    & (Join-Path $root 'dist\awgctl.exe') trust -o $bootstrap
-    if ($LASTEXITCODE -ne 0) { throw 'awgctl trust не сработал' }
-}
+# Made afresh every time, so that what was added since (a place for the
+# installers, say) is in this build.
+& (Join-Path $PSScriptRoot 'prepare-bootstrap.ps1')
 
 # --- tools for the check afterwards
 function Find-Jbr {
