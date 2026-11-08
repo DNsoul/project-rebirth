@@ -426,6 +426,13 @@ void main() {
           allOf(contains('Вторая причина'), contains('Третья причина')),
           reason: 'the others are in the log',
         );
+        expect(
+          logs.join('\n'),
+          isNot(contains('cleanup')),
+          reason:
+              'a download that failed before the first byte left no file, and '
+              'taking away a file that is not there is not worth a line',
+        );
 
         // And "try again" starts from the usual way again.
         downloader.routesAsked.clear();

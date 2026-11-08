@@ -262,7 +262,7 @@ class UpdateController implements UpdateView {
         } on UpdateException catch (e) {
           _log('update: the ${route.name} route failed: ${e.message}');
           firstFailure ??= e;
-          await _quiet(part.delete);
+          await _discard(part);
         }
       }
       if (firstFailure != null) {
@@ -287,10 +287,18 @@ class UpdateController implements UpdateView {
       _fail(offer, 'Не удалось обновиться. Повторите позже. ($e)');
     } finally {
       if (part != null) {
-        await _quiet(part.delete);
+        await _discard(part);
       }
     }
   }
+
+  /// Takes away a half-downloaded file, if there is one: a download that failed
+  /// before the first byte never made it, and that is not worth a line in the log.
+  Future<void> _discard(File file) => _quiet(() async {
+    if (await file.exists()) {
+      await file.delete();
+    }
+  });
 
   void _fail(UpdateOffer offer, String message) {
     _log('update failed: $message');
