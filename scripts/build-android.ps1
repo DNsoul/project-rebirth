@@ -12,7 +12,12 @@
   ключа, а не отладочным.
 
   Нужны libawg.so (scripts\build-android-lib.ps1) и app\assets\bootstrap.json.
-  Только arm64: библиотеки туннеля для 32-битных ARM нет.
+
+  APK универсальный: в нём всё для arm64-v8a, armeabi-v7a (32-битные ARM) и x86_64,
+  система сама берёт своё. Он весит втрое больше, чем только для arm64, зато ставится
+  на любое устройство с Android 7 и новее. Каждой из трёх архитектур нужна своя
+  libawg.so: без неё приложение на таком устройстве не запустится, поэтому скрипт
+  проверяет, что они есть, и после сборки смотрит, что все они попали в APK.
 #>
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -33,8 +38,11 @@ $version = $match.Groups[1].Value
 Write-Host "Версия $version, сборка $($match.Groups[2].Value)"
 
 # --- what the build needs
-$lib = Join-Path $app 'android\app\src\main\jniLibs\arm64-v8a\libawg.so'
-if (-not (Test-Path $lib)) { throw "Нет $lib. Собери: .\scripts\build-android-lib.ps1" }
+$abis = @('arm64-v8a', 'armeabi-v7a', 'x86_64')
+foreach ($abi in $abis) {
+    $lib = Join-Path $app "android\app\src\main\jniLibs\$abi\libawg.so"
+    if (-not (Test-Path $lib)) { throw "Нет $lib. Собери: .\scripts\build-android-lib.ps1" }
+}
 $bootstrap = Join-Path $app 'assets\bootstrap.json'
 if (-not (Test-Path $bootstrap)) {
     Write-Host 'Нет app\assets\bootstrap.json, делаю через awgctl…'
@@ -60,7 +68,8 @@ $env:REBIRTH_REQUIRE_RELEASE_KEY = '1'
 try {
     Push-Location $app
     try {
-        flutter build apk --release --target-platform android-arm64
+        # No --target-platform and no --split-per-abi: one APK for all of them.
+        flutter build apk --release
         if ($LASTEXITCODE -ne 0) { throw 'flutter build не сработал' }
     } finally {
         Pop-Location
@@ -70,6 +79,23 @@ try {
 }
 $built = Join-Path $app 'build\app\outputs\flutter-apk\app-release.apk'
 if (-not (Test-Path $built)) { throw "Нет $built" }
+
+# Every architecture has to be in the APK with the three files it needs: Flutter's
+# engine, the program, and the tunnel. One missing means a device of that kind
+# would install the app and then not be able to start it.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip = [IO.Compression.ZipFile]::OpenRead($built)
+try {
+    $names = $zip.Entries | ForEach-Object { $_.FullName }
+} finally {
+    $zip.Dispose()
+}
+foreach ($abi in $abis) {
+    foreach ($so in 'libflutter.so', 'libapp.so', 'libawg.so') {
+        if ($names -notcontains "lib/$abi/$so") { throw "В APK нет lib/$abi/${so}: на таких устройствах приложение не запустится." }
+    }
+}
+Write-Host ("В APK есть все архитектуры: {0}" -f ($abis -join ', '))
 
 # --- the signature is the real key's
 $env:JAVA_HOME = $jbr

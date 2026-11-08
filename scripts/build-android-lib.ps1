@@ -8,10 +8,13 @@
   Android NDK (ставится вместе с Android Studio): он даёт компилятор C, которого
   Go требует для общей библиотеки.
 
-  По умолчанию собирается arm64-v8a (телефоны) и x86_64 (эмулятор).
+  По умолчанию собираются все три архитектуры, под которые Flutter собирает выпускной
+  APK: arm64-v8a (почти все телефоны), armeabi-v7a (32-битные ARM, старые и недорогие
+  телефоны) и x86_64 (эмулятор и немногие планшеты и Chromebook). Без библиотеки для
+  какой-то из них приложение на таком устройстве не запустится: туннель в ней.
 #>
 param(
-    [string[]]$Abis = @('arm64-v8a', 'x86_64'),
+    [string[]]$Abis = @('arm64-v8a', 'armeabi-v7a', 'x86_64'),
     [string]$NdkVersion = '27.0.12077973',
     [int]$ApiLevel = 24
 )
@@ -24,10 +27,12 @@ $ndk = Join-Path $sdk "ndk\$NdkVersion"
 $bin = Join-Path $ndk 'toolchains\llvm\prebuilt\windows-x86_64\bin'
 if (-not (Test-Path $bin)) { throw "Нет NDK $NdkVersion в $sdk\ndk. Доступные: $((Get-ChildItem (Join-Path $sdk 'ndk') -Directory).Name -join ', ')" }
 
-# ABI -> (GOARCH, clang triple)
+# ABI -> (GOARCH, GOARM, clang triple). The 32-bit ARM compiler's name has the
+# architecture (armv7a) and the "eabi" ending that the others do not.
 $targets = @{
-    'arm64-v8a' = @{ Arch = 'arm64'; Triple = 'aarch64-linux-android' }
-    'x86_64'    = @{ Arch = 'amd64'; Triple = 'x86_64-linux-android' }
+    'arm64-v8a'   = @{ Arch = 'arm64'; Arm = ''; Triple = 'aarch64-linux-android' }
+    'armeabi-v7a' = @{ Arch = 'arm'; Arm = '7'; Triple = 'armv7a-linux-androideabi' }
+    'x86_64'      = @{ Arch = 'amd64'; Arm = ''; Triple = 'x86_64-linux-android' }
 }
 
 foreach ($abi in $Abis) {
@@ -40,6 +45,7 @@ foreach ($abi in $Abis) {
     Write-Host "Собираю $abi…"
     $env:GOOS = 'android'
     $env:GOARCH = $t.Arch
+    if ($t.Arm) { $env:GOARM = $t.Arm }
     $env:CGO_ENABLED = '1'
     $env:CC = Join-Path $bin "$($t.Triple)$ApiLevel-clang.cmd"
     Push-Location $go
@@ -51,7 +57,7 @@ foreach ($abi in $Abis) {
         if ($LASTEXITCODE -ne 0) { throw "go build для $abi не сработал" }
     } finally {
         Pop-Location
-        Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED, Env:CC -ErrorAction SilentlyContinue
+        Remove-Item Env:GOOS, Env:GOARCH, Env:GOARM, Env:CGO_ENABLED, Env:CC -ErrorAction SilentlyContinue
     }
     # Заголовок, который делает cgo, приложению не нужен.
     Remove-Item (Join-Path $outDir 'libawg.h') -ErrorAction SilentlyContinue

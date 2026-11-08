@@ -21,7 +21,7 @@ app/
 ```powershell
 .\scripts\build-windows.ps1            # dist\rebirth-windows\Rebirth.exe, просит права администратора
 .\scripts\build-windows.ps1 -NoElevation   # для разработки: открывается из обычной консоли, подключиться не может
-.\scripts\build-android-lib.ps1        # libawg.so (arm64-v8a и x86_64) в app\android\...\jniLibs
+.\scripts\build-android-lib.ps1        # libawg.so (arm64-v8a, armeabi-v7a и x86_64) в app\android\...\jniLibs
 cd app; flutter build apk --debug --target-platform android-arm64
 ```
 
@@ -297,8 +297,16 @@ SHA-256 и заготовку команды `awgctl release publish`.
 
 ## Подписанный APK для Android
 
-`.\scripts\build-android.ps1` собирает `dist\installers\Rebirth-<версия>.apk` (только
-arm64: библиотеки туннеля для 32-битных ARM нет) и проверяет подпись.
+`.\scripts\build-android.ps1` собирает `dist\installers\Rebirth-<версия>.apk` и проверяет
+подпись. APK универсальный: в нём всё для arm64-v8a, armeabi-v7a (32-битные ARM) и
+x86_64, система берёт нужное сама. Он втрое больше, чем только для arm64 (около 55 МБ
+вместо 19), зато ставится на любое устройство с Android 7 и новее. Для каждой из трёх
+архитектур нужна своя `libawg.so` (`build-android-lib.ps1` собирает все три): без неё
+приложение на таком устройстве не запустится. Скрипт проверяет, что библиотеки есть до
+сборки, а после неё что в APK у каждой архитектуры есть `libflutter.so`, `libapp.so` и
+`libawg.so`. Библиотеки проверены по заголовкам (архитектура, выравнивание страниц
+16 КБ, все функции, которые ищет приложение), а запускались только на arm64: на 32-битном
+ARM и на x86_64 приложение не запускалось.
 
 Android ставит обновление поверх установленного приложения, только если оно подписано
 тем же ключом, поэтому все APK, которые кто-то получает, подписаны одним постоянным
