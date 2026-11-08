@@ -8,6 +8,9 @@
     <!-- To hand a downloaded update to the system's installer. The person still
          has to allow it for this app, in the settings, before it works. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- A VPN that the system stops to save battery is no VPN: the app asks, once,
+         to be left running. The person answers in the system's own dialog. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:label="Rebirth"

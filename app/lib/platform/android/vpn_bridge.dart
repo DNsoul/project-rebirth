@@ -28,6 +28,24 @@ abstract class VpnBridge {
   /// Changes what the notification of the running service says.
   Future<void> setStatus(String text);
 
+  /// Makes sure the notification that shows what the VPN is doing can be seen:
+  /// asks in a dialog on Android 13 and later, and opens the page of the app's
+  /// settings (once) on phones that have it switched off. Answers `granted`,
+  /// `denied`, or `settings` (sent to the settings page and come back). Returns
+  /// when the person has answered.
+  Future<String> ensureNotifications();
+
+  /// Asks to be left running in the background: the system's own dialog "allow
+  /// always running in the background?" (on Xiaomi phones their power page for the
+  /// app). Answers `granted` or `denied` once the choice has taken effect.
+  Future<String> ensureBatteryExemption();
+
+  /// Asks for the right to install the updates the app downloads. Android has no
+  /// dialog for it, so this opens the page "install unknown apps" for the app (not
+  /// more than once a day) and answers `granted` or `denied` when the person is
+  /// back.
+  Future<String> ensureInstallPermission();
+
   /// This device's Android ID: it survives reinstalling the app.
   Future<String> androidId();
 
@@ -93,6 +111,18 @@ class MethodChannelVpnBridge implements VpnBridge {
   @override
   Future<void> setStatus(String text) =>
       _channel.invokeMethod<void>('status', {'text': text});
+
+  @override
+  Future<String> ensureNotifications() async =>
+      await _channel.invokeMethod<String>('notifications') ?? 'denied';
+
+  @override
+  Future<String> ensureBatteryExemption() async =>
+      await _channel.invokeMethod<String>('battery') ?? 'denied';
+
+  @override
+  Future<String> ensureInstallPermission() async =>
+      await _channel.invokeMethod<String>('install') ?? 'denied';
 
   @override
   Future<String> androidId() async =>

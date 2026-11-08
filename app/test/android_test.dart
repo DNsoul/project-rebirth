@@ -121,6 +121,31 @@ class FakeBridge implements VpnBridge {
   @override
   Future<void> setStatus(String text) async => statuses.add(text);
 
+  /// What the person answers to each of the questions the app asks at the start,
+  /// and what goes wrong, if anything, by the name of the question.
+  final answers = {
+    'notifications': 'granted',
+    'battery': 'granted',
+    'install': 'granted',
+  };
+  final failures = <String, Object>{};
+
+  Future<String> _asked(String question) async {
+    calls.add(question);
+    final e = failures[question];
+    if (e != null) throw e;
+    return answers[question]!;
+  }
+
+  @override
+  Future<String> ensureNotifications() => _asked('notifications');
+
+  @override
+  Future<String> ensureBatteryExemption() => _asked('battery');
+
+  @override
+  Future<String> ensureInstallPermission() => _asked('install');
+
   @override
   Future<String> androidId() async => id;
 
@@ -458,6 +483,10 @@ void main() {
             return true;
           case 'androidId':
             return 'dev-1';
+          case 'notifications':
+          case 'battery':
+          case 'install':
+            return 'granted';
           default:
             return null;
         }
@@ -511,6 +540,32 @@ void main() {
         expect(calls.last.arguments, {'text': 'Подключено · Амстердам'});
       },
     );
+
+    test(
+      'asks the start-up questions by the names Kotlin answers to',
+      () async {
+        final bridge = MethodChannelVpnBridge();
+        expect(await bridge.ensureNotifications(), 'granted');
+        expect(await bridge.ensureBatteryExemption(), 'granted');
+        expect(await bridge.ensureInstallPermission(), 'granted');
+        expect(calls.map((c) => c.method), [
+          'notifications',
+          'battery',
+          'install',
+        ]);
+      },
+    );
+
+    test('takes a missing answer as a refusal', () async {
+      binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        (call) async => null,
+      );
+      final bridge = MethodChannelVpnBridge();
+      expect(await bridge.ensureNotifications(), 'denied');
+      expect(await bridge.ensureBatteryExemption(), 'denied');
+      expect(await bridge.ensureInstallPermission(), 'denied');
+    });
 
     test('hears when the system takes the VPN away', () async {
       final bridge = MethodChannelVpnBridge();

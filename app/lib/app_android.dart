@@ -22,6 +22,7 @@ import 'platform/android/android_system.dart';
 import 'platform/android/apk_installer.dart';
 import 'platform/android/android_tunnel.dart';
 import 'platform/android/awg_native.dart';
+import 'platform/android/permissions.dart';
 import 'platform/android/vpn_bridge.dart';
 import 'platform/windows/tray_state.dart' show trayStateFor;
 
@@ -123,9 +124,15 @@ Future<void> runAndroid(List<String> args) async {
   runApp(App(controller: controller, updates: updates));
 
   StallWatchdog(log: log).start();
-  unawaited(
-    controller.start().catchError((Object e, StackTrace s) {
+  // First what the person has to allow, one question at a time: the notification
+  // (here), then the VPN (in the controller's start-up check). The window is
+  // already up behind the questions.
+  unawaited(() async {
+    await askForPermissions(bridge, log: log);
+    try {
+      await controller.start();
+    } on Object catch (e, s) {
       log('start failed: $e\n$s');
-    }),
-  );
+    }
+  }());
 }
