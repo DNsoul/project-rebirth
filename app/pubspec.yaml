@@ -2,7 +2,7 @@ name: awg_client
 description: "One-button VPN client for the awg-rotator fleet"
 publish_to: 'none'
 
-version: 1.2.0+5
+version: 1.3.0+6
 
 environment:
   sdk: ^3.11.4
