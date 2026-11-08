@@ -13,17 +13,40 @@ abstract class ReleaseSource {
   Stream<Release> get releaseStream;
 }
 
+/// The ways a file can be fetched. They are tried one after another until one
+/// gives the announced file: GitHub's front-ends take turns at failing (one file
+/// and then another, one address and then another), so a second way is often
+/// there when the first is not.
+enum DownloadRoute {
+  /// The announced address, the way the system takes it: through the tunnel, for
+  /// the names the tunnel carries.
+  usual,
+
+  /// GitHub's API address of the same file. A different front-end from the one
+  /// that serves the announced address, over the same road, so it leaves nothing
+  /// more to be seen than the first.
+  api,
+
+  /// The announced address, round the tunnel: the name's real address is found
+  /// outside the machine's own resolver and reached straight, as if the tunnel
+  /// were off. Last, because it shows the machine's own address and asks a public
+  /// resolver for the name.
+  direct,
+}
+
 /// Saves what is at an address into a file.
 abstract class Downloader {
-  /// Writes the body at [url] to [file]. Throws [UpdateException] if the server
-  /// does not answer properly, and stops at once if more than [limit] bytes
-  /// arrive: the announcement says how big the file is, and a server that sends
-  /// more is not sending that file. [onProgress] is told how much has arrived.
+  /// Writes the body at [url] to [file], the way [route] says. Throws
+  /// [UpdateException] if the server does not answer properly, and stops at once
+  /// if more than [limit] bytes arrive: the announcement says how big the file
+  /// is, and a server that sends more is not sending that file. [onProgress] is
+  /// told how much has arrived.
   Future<void> download(
     Uri url,
     File file, {
     required int limit,
     void Function(int received)? onProgress,
+    DownloadRoute route = DownloadRoute.usual,
   });
 }
 
@@ -111,6 +134,7 @@ class UpdateController implements UpdateView {
     required this.downloader,
     required this.installer,
     required this.directory,
+    this.routes = DownloadRoute.values,
     void Function(String line)? log,
   }) : _log = log ?? ((_) {}) {
     _sub = releases.releaseStream.listen((_) => _refresh());
@@ -130,6 +154,9 @@ class UpdateController implements UpdateView {
 
   /// Where a download is kept. Emptied before each one.
   final Directory directory;
+
+  /// The ways to fetch the file, in the order they are tried.
+  final List<DownloadRoute> routes;
 
   final void Function(String) _log;
 
@@ -200,21 +227,47 @@ class UpdateController implements UpdateView {
       final file = await _prepare(offer);
       part = File('${file.path}.part');
 
-      var shown = 0.0;
-      await downloader.download(
-        Uri.parse(offer.asset.url),
-        part,
-        limit: offer.asset.size,
-        onProgress: (received) {
-          final p = (received / offer.asset.size).clamp(0.0, 1.0);
-          if (p - shown >= 0.01) {
-            shown = p;
-            _emit(UpdateStatus(UpdatePhase.downloading, offer, progress: p));
+      // Each way is tried until one gives the announced file. A way that fails,
+      // whether by not answering or by giving a file that is not the announced
+      // one, is followed by the next. When none works, the person is told what
+      // went wrong with the first, the way things are usually done.
+      UpdateException? firstFailure;
+      for (final route in routes) {
+        var shown = 0.0;
+        if (route != routes.first) {
+          _emit(UpdateStatus(UpdatePhase.downloading, offer));
+        }
+        try {
+          await downloader.download(
+            Uri.parse(offer.asset.url),
+            part,
+            limit: offer.asset.size,
+            route: route,
+            onProgress: (received) {
+              final p = (received / offer.asset.size).clamp(0.0, 1.0);
+              if (p - shown >= 0.01) {
+                shown = p;
+                _emit(
+                  UpdateStatus(UpdatePhase.downloading, offer, progress: p),
+                );
+              }
+            },
+          );
+          await _verify(part, offer.asset);
+          if (route != routes.first) {
+            _log('update: the file came by the ${route.name} route');
           }
-        },
-      );
-
-      await _verify(part, offer.asset);
+          firstFailure = null;
+          break;
+        } on UpdateException catch (e) {
+          _log('update: the ${route.name} route failed: ${e.message}');
+          firstFailure ??= e;
+          await _quiet(part.delete);
+        }
+      }
+      if (firstFailure != null) {
+        throw firstFailure;
+      }
       await part.rename(file.path);
       part = null;
 

@@ -40,20 +40,32 @@ class FakeDownloader implements Downloader {
   Uri? lastUrl;
   int? lastLimit;
 
+  /// The ways it was asked to fetch the file, in order.
+  final routesAsked = <DownloadRoute>[];
+
+  /// What a way gives instead of the common [fail] or [bytes]: an error to
+  /// throw, or the bytes to write.
+  final perRoute = <DownloadRoute, Object>{};
+
   @override
   Future<void> download(
     Uri url,
     File file, {
     required int limit,
     void Function(int received)? onProgress,
+    DownloadRoute route = DownloadRoute.usual,
   }) async {
     calls++;
     lastUrl = url;
     lastLimit = limit;
+    routesAsked.add(route);
     final g = gate;
     if (g != null) await g.future;
+    final special = perRoute[route];
+    if (special is Exception) throw special;
     final f = fail;
     if (f != null) throw f;
+    final bytes = special is List<int> ? special : this.bytes;
     final sink = file.openWrite();
     var sent = 0;
     for (var i = 0; i < 4; i++) {
@@ -342,6 +354,139 @@ void main() {
       await updates.install();
       expect(installer.started, hasLength(1));
       expect(updates.status!.phase, UpdatePhase.available);
+    });
+
+    group('when one way of fetching the file does not work', () {
+      UpdateException trouble(String say) => UpdateException(say);
+
+      test('the usual way is the only one asked, when it works', () async {
+        await releases.announce(await releaseOf(installerBytes));
+        await updates.install();
+        expect(downloader.routesAsked, [DownloadRoute.usual]);
+        expect(installer.started, hasLength(1));
+      });
+
+      test(
+        'the next is tried, and the person never hears of the first',
+        () async {
+          await releases.announce(await releaseOf(installerBytes));
+          downloader.perRoute[DownloadRoute.usual] = trouble(
+            'Сервер упал (504).',
+          );
+
+          await updates.install();
+
+          expect(downloader.routesAsked, [
+            DownloadRoute.usual,
+            DownloadRoute.api,
+          ]);
+          expect(installer.started, hasLength(1));
+          expect(updates.status!.phase, UpdatePhase.available);
+          expect(
+            logs.join('\n'),
+            allOf(contains('usual route failed'), contains('api route')),
+            reason: 'the log says which way worked',
+          );
+        },
+      );
+
+      test(
+        'they are tried in turn: the usual, by the API, round the tunnel',
+        () async {
+          await releases.announce(await releaseOf(installerBytes));
+          downloader.perRoute[DownloadRoute.usual] = trouble('one');
+          downloader.perRoute[DownloadRoute.api] = trouble('two');
+
+          await updates.install();
+
+          expect(downloader.routesAsked, [
+            DownloadRoute.usual,
+            DownloadRoute.api,
+            DownloadRoute.direct,
+          ]);
+          expect(installer.started, hasLength(1));
+        },
+      );
+
+      test('when none works, the first reason is the one told', () async {
+        await releases.announce(await releaseOf(installerBytes));
+        downloader.perRoute[DownloadRoute.usual] = trouble('Первая причина.');
+        downloader.perRoute[DownloadRoute.api] = trouble('Вторая причина.');
+        downloader.perRoute[DownloadRoute.direct] = trouble('Третья причина.');
+
+        await updates.install();
+
+        expect(downloader.routesAsked, hasLength(3));
+        expect(installer.started, isEmpty);
+        expect(updates.status!.phase, UpdatePhase.failed);
+        expect(updates.status!.message, 'Первая причина.');
+        expect(filesLeft(), isEmpty);
+        expect(
+          logs.join('\n'),
+          allOf(contains('Вторая причина'), contains('Третья причина')),
+          reason: 'the others are in the log',
+        );
+
+        // And "try again" starts from the usual way again.
+        downloader.routesAsked.clear();
+        downloader.perRoute.clear();
+        await updates.install();
+        expect(downloader.routesAsked, [DownloadRoute.usual]);
+        expect(installer.started, hasLength(1));
+      });
+
+      test(
+        'a file that is not the announced one is followed by the next way',
+        () async {
+          await releases.announce(await releaseOf(installerBytes));
+          downloader.perRoute[DownloadRoute.usual] = Uint8List.fromList(
+            List.of(installerBytes)..[77] ^= 0xFF,
+          );
+
+          await updates.install();
+
+          expect(downloader.routesAsked, [
+            DownloadRoute.usual,
+            DownloadRoute.api,
+          ]);
+          expect(installer.started, hasLength(1));
+          expect(
+            File(installer.started.single.path).readAsBytesSync(),
+            installerBytes,
+            reason: 'what was installed is the announced file, not the bad one',
+          );
+        },
+      );
+
+      test('a failure that is not about the way is not tried again', () async {
+        await releases.announce(await releaseOf(installerBytes));
+        downloader.fail = const FileSystemException('диск полон');
+
+        await updates.install();
+
+        expect(downloader.routesAsked, [DownloadRoute.usual]);
+        expect(updates.status!.message, contains('диск полон'));
+      });
+
+      test('the ways can be chosen', () async {
+        final only = UpdateController(
+          releases: releases,
+          os: osWindows,
+          currentBuild: 1,
+          downloader: downloader,
+          installer: installer,
+          directory: Directory('${dir.path}${Platform.pathSeparator}only'),
+          routes: const [DownloadRoute.usual],
+        );
+        await releases.announce(await releaseOf(installerBytes));
+        downloader.perRoute[DownloadRoute.usual] = trouble('Нет.');
+
+        await only.install();
+
+        expect(downloader.routesAsked, [DownloadRoute.usual]);
+        expect(only.status!.phase, UpdatePhase.failed);
+        await only.dispose();
+      });
     });
 
     test('says what went wrong with starting the installer', () async {
