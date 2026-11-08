@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-  Отправляет код (все ветки и теги) на запасное место, в GitLab.
+  Отправляет код (ветку master и теги) на запасное место, в GitLab.
 
 .DESCRIPTION
   Токен берётся из GITLAB_TOKEN в secrets.env (или из переменной среды) и передаётся
@@ -15,10 +15,14 @@
 .PARAMETER Url
   Адрес репозитория, https://gitlab.com/владелец/имя.git. По умолчанию из состояния
   оператора (state\state.json).
+.PARAMETER AllBranches
+  Отправить вообще все ветки. По умолчанию только master: то, что уже публично на
+  GitHub, без незаконченных веток.
 #>
 param(
     [string]$Remote = 'gitlab',
-    [string]$Url
+    [string]$Url,
+    [switch]$AllBranches
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,9 +65,15 @@ try {
     # command only.
     $basic = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("oauth2:$token"))
     $env:GIT_TERMINAL_PROMPT = '0'
-    Write-Host "Отправляю ветки в $Url…"
-    git -c "http.extraHeader=Authorization: Basic $basic" push $Remote --all
-    if ($LASTEXITCODE -ne 0) { throw 'git push --all не сработал' }
+    # Git reports what it did ("To https://...") on stderr, which Windows PowerShell
+    # 5.1 turns into an error that stops the script; its exit code is what counts.
+    $ErrorActionPreference = 'Continue'
+    # Typed as a list: a one-word list would otherwise come out of the "if" as a
+    # string, and splatting a string splats its letters.
+    [string[]]$refs = if ($AllBranches) { '--all' } else { 'master' }
+    Write-Host ("Отправляю {0} в {1}…" -f $(if ($AllBranches) { 'все ветки' } else { 'ветку master' }), $Url)
+    git -c "http.extraHeader=Authorization: Basic $basic" push $Remote @refs
+    if ($LASTEXITCODE -ne 0) { throw 'git push не сработал' }
     Write-Host 'Отправляю теги…'
     git -c "http.extraHeader=Authorization: Basic $basic" push $Remote --tags
     if ($LASTEXITCODE -ne 0) { throw 'git push --tags не сработал' }
