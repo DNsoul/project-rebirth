@@ -48,6 +48,25 @@ void main() {
       expect(s.toggleLabel, 'Отключить');
     });
 
+    test(
+      'a connection being brought back says so, in the notification too',
+      () {
+        final s = trayStateFor(
+          AppStatus(
+            Phase.connected,
+            region: 'sto',
+            since: since,
+            lostContact: true,
+            recovering: true,
+          ),
+        );
+        expect(s.icon, TrayIcon.busy);
+        expect(s.statusLine, 'Восстанавливаю связь… · Стокгольм');
+        expect(s.tooltip, 'Rebirth: восстанавливаю связь… · Стокгольм');
+        expect(s.toggleLabel, 'Отключить');
+      },
+    );
+
     test('work in progress: amber, and it can be called off', () {
       for (final phase in [Phase.connecting, Phase.switching]) {
         final s = trayStateFor(AppStatus(phase, region: 'ams'));

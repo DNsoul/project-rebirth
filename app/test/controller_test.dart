@@ -943,9 +943,16 @@ void main() {
       await rig.controller.connect();
       final fetched = rig.gist.fetches;
 
+      final seen = <AppStatus>[];
+      final sub = rig.controller.statusStream.listen(seen.add);
       rig.tunnel.handshakeAge = const Duration(minutes: 5);
       await rig.controller.checkHealthNow();
       expect(rig.status.lostContact, isTrue);
+      expect(
+        seen.any((s) => s.lostContact && s.recovering),
+        isTrue,
+        reason: 'the way back is shown as such, not as a dead server',
+      );
       expect(
         rig.gist.fetches,
         greaterThan(fetched),
@@ -954,7 +961,12 @@ void main() {
 
       rig.tunnel.handshakeAge = null;
       await rig.controller.checkHealthNow();
+      for (var i = 0; i < 400; i++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      await sub.cancel();
       expect(rig.status.lostContact, isFalse);
+      expect(rig.status.recovering, isFalse);
     });
 
     test('and follows a replacement that is already published', () async {
@@ -1027,6 +1039,63 @@ void main() {
       expect(rig.tunnels, ['awgr-b']);
       expect(rig.status.phase, Phase.connected);
       expect(rig.status.lostContact, isFalse);
+    });
+
+    test('while the connection is brought back it says so, and stops saying so '
+        'once the server answers', () async {
+      await rig.controller.connect();
+      rig.tunnel.handshakeAge = const Duration(minutes: 10);
+      final seen = <AppStatus>[];
+      final sub = rig.controller.statusStream.listen(seen.add);
+
+      net.add(true);
+      await settle();
+      await sub.cancel();
+
+      expect(seen.any((s) => s.recovering), isTrue);
+      expect(rig.status.phase, Phase.connected);
+      expect(rig.status.recovering, isFalse);
+      expect(rig.status.lostContact, isFalse);
+    });
+
+    test(
+      'when bringing it back fails, it says the server does not answer',
+      () async {
+        await rig.controller.connect();
+        rig.tunnel.handshakeAge = const Duration(minutes: 10);
+        sto.alive = false;
+
+        net.add(true);
+        await settle();
+
+        expect(rig.status.phase, Phase.connected);
+        expect(rig.status.lostContact, isTrue);
+        expect(rig.status.recovering, isFalse);
+      },
+    );
+
+    test('a network that is gone is shown as coming back for half a minute, '
+        'then as a server that does not answer', () async {
+      await rig.controller.connect();
+
+      net.add(false);
+      await settle();
+      expect(rig.status.lostContact, isTrue);
+      expect(rig.status.recovering, isTrue, reason: 'Wi-Fi is being found');
+
+      rig.clock.advance(const Duration(seconds: 20));
+      await rig.controller.checkHealthNow();
+      expect(rig.status.recovering, isTrue, reason: 'still within the grace');
+
+      rig.clock.advance(const Duration(seconds: 15));
+      await rig.controller.checkHealthNow();
+      expect(rig.status.recovering, isFalse, reason: 'past the grace');
+      expect(rig.status.lostContact, isTrue);
+
+      net.add(true);
+      await settle();
+      expect(rig.status.lostContact, isFalse);
+      expect(rig.status.recovering, isFalse);
     });
 
     test('with no network at all it says so and waits', () async {

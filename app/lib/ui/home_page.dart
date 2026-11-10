@@ -55,6 +55,7 @@ class HomePage extends StatelessWidget {
                     child: RebirthStage(
                       phase: status.phase,
                       lostContact: status.lostContact,
+                      recovering: status.recovering,
                       step: status.step,
                       size: side,
                       onPressed: () => _press(status),

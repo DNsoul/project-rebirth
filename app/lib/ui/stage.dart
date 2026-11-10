@@ -216,6 +216,7 @@ class StageLook {
   static StageLook of(
     Phase phase, {
     bool lostContact = false,
+    bool recovering = false,
     ConnectStep? step,
   }) {
     switch (phase) {
@@ -253,6 +254,30 @@ class StageLook {
           ),
         );
       case Phase.connected:
+        // Getting the connection back after sleep or a change of network: still
+        // connected, so the bird keeps its colour, and the arc runs round the
+        // ring as it does while connecting, to say that work is going on.
+        if (recovering) {
+          return const StageLook(
+            bird: Ember.orange,
+            ring: Color(0x47F2B134),
+            ringGap: 0,
+            spinner: Color(0xFFFFC857),
+            spinnerAmount: 1,
+            spinnerTurns: 1.1,
+            retry: 0,
+            progress: 4,
+            badgeColor: Ember.orange,
+            fire: FireLook(
+              color: Color(0xFFFFB347),
+              level: 0.6,
+              pulse: 0.45,
+              period: 1.2,
+              flicker: 0.4,
+              embers: 0.4,
+            ),
+          );
+        }
         if (lostContact) {
           return const StageLook(
             bird: Color(0xFFB8861F),
@@ -390,11 +415,15 @@ class RebirthStage extends StatefulWidget {
     required this.onPressed,
     required this.size,
     this.lostContact = false,
+    this.recovering = false,
     this.step,
   });
 
   final Phase phase;
   final bool lostContact;
+
+  /// Connected, and the connection is being brought back.
+  final bool recovering;
 
   /// The stage of the connection being made, or the one it failed at.
   final ConnectStep? step;
@@ -458,6 +487,7 @@ class _RebirthStageState extends State<RebirthStage>
     final target = StageLook.of(
       widget.phase,
       lostContact: widget.lostContact,
+      recovering: widget.recovering,
       step: widget.step,
     );
     final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;

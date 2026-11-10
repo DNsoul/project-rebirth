@@ -109,8 +109,12 @@ TrayState trayStateFor(AppStatus s) {
         toggleEnabled: true,
       );
     case Phase.connected:
-      final quiet = s.lostContact;
-      final line = quiet ? 'Нет ответа от сервера$place' : 'Подключено$place';
+      final quiet = s.lostContact || s.recovering;
+      final line = s.recovering
+          ? 'Восстанавливаю связь…$place'
+          : s.lostContact
+          ? 'Нет ответа от сервера$place'
+          : 'Подключено$place';
       return TrayState(
         icon: quiet ? TrayIcon.busy : TrayIcon.connected,
         tooltip: _fit('Rebirth: ${line[0].toLowerCase()}${line.substring(1)}'),

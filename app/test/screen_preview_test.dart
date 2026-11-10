@@ -153,6 +153,17 @@ void main() {
         ),
         at: 600,
       ),
+      _Shot(
+        '5b-recovering',
+        AppStatus(
+          Phase.connected,
+          region: 'sto',
+          since: since,
+          lostContact: true,
+          recovering: true,
+        ),
+        at: 450,
+      ),
       const _Shot('6-disconnecting', AppStatus(Phase.disconnecting), at: 600),
       const _Shot(
         '7-failed',
@@ -300,6 +311,12 @@ void main() {
       [named('7c-waiting-for-owner')],
       const Size(360, 780),
       'phone-waiting-for-owner.png',
+    );
+    // Recovering beside connected and lost contact, to compare.
+    await render(
+      [named('3-connected'), named('5b-recovering'), named('5-silent')],
+      const Size(360, 780),
+      'phone-recovering-compare.png',
     );
     await render(
       [named('7d-refused')],

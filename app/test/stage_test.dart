@@ -98,6 +98,31 @@ void main() {
     });
   });
 
+  group('bringing the connection back', () {
+    final back = StageLook.of(
+      Phase.connected,
+      lostContact: true,
+      recovering: true,
+    );
+    final silent = StageLook.of(Phase.connected, lostContact: true);
+    final connected = StageLook.of(Phase.connected);
+
+    test(
+      'keeps the colour of a connection and runs the arc round the ring',
+      () {
+        expect(back.bird, connected.bird);
+        expect(back.spinnerAmount, 1);
+        expect(silent.spinnerAmount, 0);
+      },
+    );
+
+    test('does not look like a server that does not answer', () {
+      expect(back.bird, isNot(silent.bird));
+      expect(back.ringGap, 0, reason: 'the broken ring is for silence only');
+      expect(silent.ringGap, greaterThan(0));
+    });
+  });
+
   group('the look of each state', () {
     test('off has no light and nothing that moves', () {
       final off = StageLook.of(Phase.idle);

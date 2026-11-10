@@ -43,7 +43,12 @@ class AppStatus {
     this.note = '',
     this.step,
     this.approvalCode = '',
+    this.recovering = false,
   });
+
+  /// Connected, and the app is getting the connection back: after sleep or a
+  /// change of network, before it knows whether the server answers again.
+  final bool recovering;
 
   final Phase phase;
 
@@ -204,6 +209,21 @@ class ConnectionController implements ConnectionView, ReleaseSource {
   bool _networkRunning = false;
   bool _networkAgain = false;
   bool _networkAvailable = true;
+
+  /// When the last network went, while none has come back.
+  DateTime? _networkGoneAt;
+
+  /// How long a missing network is shown as the connection coming back. A phone
+  /// that wakes up takes a few seconds to find its Wi-Fi again; after this long
+  /// it is more likely that there is no internet at all, and the app says so.
+  static const networkGrace = Duration(seconds: 30);
+
+  bool get _waitingForNetwork {
+    final gone = _networkGoneAt;
+    return !_networkAvailable &&
+        gone != null &&
+        _now().difference(gone) < networkGrace;
+  }
 
   /// Belongs to the operation that is running; replaced when the next one starts.
   CancelToken _token = CancelToken();
@@ -578,16 +598,27 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         !_networkAvailable ||
         hs == null ||
         _now().difference(hs) > const Duration(minutes: 3);
-    if (lost != _status.lostContact && _status.phase == Phase.connected) {
-      _emit(
-        AppStatus(
-          _status.phase,
-          region: _status.region,
-          since: _status.since,
-          lostContact: lost,
-          note: _status.note,
-        ),
-      );
+    // The server has not been heard from for minutes and the network is there:
+    // whatever the cause, the tunnel is dead, and the way back is the one a
+    // person takes (off and on). Not more than once a minute and a half, so a
+    // server that really is down is not hammered.
+    //
+    // Only an old handshake counts. One that could not be read at all proves
+    // nothing: on Windows it is a program asked for the answer, and it may fail
+    // for reasons of its own.
+    final healed = _lastHeal;
+    final heal =
+        lost &&
+        _networkAvailable &&
+        hs != null &&
+        !_networkRunning &&
+        (healed == null ||
+            _now().difference(healed) > const Duration(seconds: 90));
+    // While the connection is being brought back, that work says how things
+    // stand; otherwise this does. Coming back is shown as such, and "the server
+    // does not answer" only once nothing is being done about it.
+    if (!_networkRunning) {
+      _setContact(lost: lost, recovering: heal || _waitingForNetwork);
     }
     if (lost && _networkAvailable) {
       final last = _lastRefresh;
@@ -595,20 +626,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
           _now().difference(last) > const Duration(seconds: 30)) {
         await pollNow();
       }
-      // The server has not been heard from for minutes and the network is there,
-      // so the cause is not a new server: whatever it is, the tunnel is dead, and
-      // the way back is the one a person takes (off and on). Not more than once a
-      // minute and a half, so a server that really is down is not hammered.
-      //
-      // Only an old handshake counts. One that could not be read at all proves
-      // nothing: on Windows it is a program asked for the answer, and it may fail
-      // for reasons of its own.
-      final healed = _lastHeal;
-      if (_status.lostContact &&
-          hs != null &&
-          !_networkRunning &&
-          (healed == null ||
-              _now().difference(healed) > const Duration(seconds: 90))) {
+      if (heal) {
         _lastHeal = _now();
         _log('health: no contact for minutes, bringing the tunnel up again');
         unawaited(_networkChanged(true));
@@ -630,6 +648,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
   /// is answered by where things ended up and not by every step on the way.
   Future<void> _networkChanged(bool available) async {
     _networkAvailable = available;
+    _networkGoneAt = available ? null : (_networkGoneAt ?? _now());
     if (_networkRunning) {
       _networkAgain = true;
       return;
@@ -656,12 +675,15 @@ class ConnectionController implements ConnectionView, ReleaseSource {
       // Nothing to do but say so: the next change, when a network is back,
       // does the work.
       _log('network: none left');
-      _setLostContact(true);
+      // Shown as coming back for a while; the health check says otherwise once
+      // the network has been gone for longer than [networkGrace].
+      _setContact(lost: true, recovering: _waitingForNetwork);
       return;
     }
 
     final since = _now();
     _log('network: changed, asking the tunnel to find the server again');
+    _setContact(lost: _status.lostContact, recovering: true);
     try {
       await tunnel.rebind(active.slot);
     } on Object catch (e) {
@@ -676,7 +698,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         token,
       )) {
         _log('network: the server answered on the new path');
-        _setLostContact(false);
+        _setContact(lost: false);
         return;
       }
       // The nudge was not enough: do what a person would, and bring the tunnel up
@@ -685,7 +707,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         'network: no answer in ${networkAnswerWithin.inSeconds} s, '
         'bringing the tunnel up again',
       );
-      _setLostContact(true);
+      _setContact(lost: true, recovering: true);
       final next = await _bringUp(active.body, previous: active, token: token);
       _active = next;
       _emit(
@@ -699,8 +721,9 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         return;
       }
       // The old tunnel is still there. The next change of network, or the health
-      // check, tries again.
+      // check, tries again; until then the server is not answering.
       _log('network: could not bring the tunnel up again: $e');
+      _setContact(lost: true);
     }
   });
 
@@ -721,9 +744,12 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     _emit(AppStatus(Phase.failed, message: explain(e)));
   }
 
-  void _setLostContact(bool lost) {
+  /// Says whether the server answers, and whether the connection is being
+  /// brought back. Only while connected; nothing is emitted if neither changed.
+  void _setContact({required bool lost, bool recovering = false}) {
     final s = _status;
-    if (s.phase != Phase.connected || s.lostContact == lost) {
+    if (s.phase != Phase.connected ||
+        (s.lostContact == lost && s.recovering == recovering)) {
       return;
     }
     _emit(
@@ -732,6 +758,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         region: s.region,
         since: s.since,
         lostContact: lost,
+        recovering: recovering,
         note: s.note,
       ),
     );
