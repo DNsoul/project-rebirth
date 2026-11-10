@@ -53,6 +53,11 @@ type StatusBody struct {
 	// counters.
 	Node *NodeSummary `json:"node,omitempty"`
 
+	// Watch is the short account of the availability log: whether this server
+	// can still get answers from Russia, and when that last changed. It is for
+	// the record and nothing acts on it.
+	Watch *WatchSummary `json:"watch,omitempty"`
+
 	UpdatedAt int64 `json:"updated_at"`
 }
 
@@ -123,8 +128,33 @@ func (s StatusBody) Describe(now time.Time) string {
 			out += "\n  ошибка: " + s.LastMove.Error
 		}
 	}
+	if w := s.Watch; w != nil {
+		out += fmt.Sprintf("\nсвязь сервера с российскими сайтами (для записи, ни на что не влияет): %s с %s",
+			watchRoundWords(w.Round), time.Unix(w.Since, 0).Format("2006-01-02 15:04"))
+		out += fmt.Sprintf("\n  Россия: %s; контроль за рубежом: %s", w.RU, w.Control)
+		for _, c := range w.Changes {
+			what := "проба сервера"
+			if c.What == "external" {
+				what = "проверка с российских точек"
+			}
+			out += fmt.Sprintf("\n  %s  %s: %s", time.Unix(c.At, 0).Format("2006-01-02 15:04"), what, watchRoundWords(c.To))
+		}
+	}
 	if s.Revoked {
 		out += "\nОТОЗВАН: этот ключ сервера больше не действует"
 	}
 	return out
+}
+
+// watchRoundWords says a round in words.
+func watchRoundWords(round string) string {
+	switch round {
+	case "good":
+		return "отвечают"
+	case "bad":
+		return "НЕ отвечают"
+	case "inconclusive":
+		return "неясно (контроль за рубежом тоже не отвечает)"
+	}
+	return round
 }

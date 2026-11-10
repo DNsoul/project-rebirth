@@ -278,6 +278,7 @@ func (p *fakePub) Reconcile(context.Context) (SyncState, error) {
 }
 
 type fakeHost struct {
+	watchLog   []byte
 	running    bool
 	restarts   int
 	status     node.Status
@@ -292,6 +293,7 @@ func (h *fakeHost) RestartNode(context.Context) error         { h.restarts++; re
 func (h *fakeHost) NodeStatus(context.Context) (node.Status, error) {
 	return h.status, h.statusErr
 }
+func (h *fakeHost) ReadWatchLog() ([]byte, error) { return h.watchLog, nil }
 func (h *fakeHost) ReadPool() ([]byte, error)     { return h.pool, nil }
 func (h *fakeHost) ReadRegistry() ([]byte, error) { return h.registry, nil }
 func (h *fakeHost) ReadBody() ([]byte, error)     { return h.body, nil }

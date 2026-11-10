@@ -43,6 +43,7 @@ func main() {
 		"release":       cmdRelease,
 		"sync":          cmdSync,
 		"gc":            cmdGC,
+		"watch":         cmdWatch,
 		"auto":          cmdAuto,
 		"verify":        cmdVerify,
 		"check-keys":    cmdCheckKeys,
@@ -80,6 +81,7 @@ func usage() {
   update          обновить узел и менеджер на текущем сервере (-files — и списки)
   command         приказать серверу: move | move-region <регион> | status | revoke <N>
   events          показать, что сервер сообщает о себе
+  watch           журнал доступности с сервера: терял ли он связь с Россией и когда (-since, -raw)
   release         объявить новую версию приложений: publish | show
   mirror          второе место (GitLab) для установщиков и файлов конфигурации:
                   set gitlab -project владелец/имя | token | sync | show

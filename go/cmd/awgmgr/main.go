@@ -90,7 +90,13 @@ func run(log *slog.Logger, configPath string, tickEvery time.Duration) error {
 		Cloud:  cloud,
 		Host:   host,
 		Prober: &lifecycle.GlobalpingProber{Client: globalping.New()},
-		Log:    log,
+
+		// The availability log: whether this server can still get answers from
+		// Russia, written down for the record. Nothing acts on it.
+		Watch:   &lifecycle.WatchLog{Path: filepath.Join(cfg.Data(), lifecycle.WatchLogName)},
+		Reverse: lifecycle.NewNetProber(),
+
+		Log: log,
 	})
 
 	// SIGTERM is what systemd sends on stop and restart.

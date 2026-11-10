@@ -34,6 +34,9 @@ type Intervals struct {
 	// them is behind or could not be reached.
 	Reconcile       time.Duration
 	ReconcileBehind time.Duration
+
+	// Watch is how often the availability log gets a line.
+	Watch time.Duration
 }
 
 // StatusGrace is how long the node's status may be missing or stale before the
@@ -72,6 +75,9 @@ func (i Intervals) withDefaults() Intervals {
 	if i.ReconcileBehind == 0 {
 		i.ReconcileBehind = DefaultReconcileBehindEvery
 	}
+	if i.Watch == 0 {
+		i.Watch = DefaultWatchEvery
+	}
 	return i
 }
 
@@ -85,6 +91,12 @@ type Manager struct {
 	Cloud  Cloud
 	Host   Host
 	Prober Prober
+
+	// Watch and Reverse keep the availability log: the server asks whether it
+	// can still get answers from Russia and writes down what it finds. Both are
+	// optional, and nothing here acts on what is found.
+	Watch   *WatchLog
+	Reverse ReverseProber
 
 	Every Intervals
 	Now   func() time.Time
@@ -104,6 +116,8 @@ type Manager struct {
 	// so the next look comes sooner.
 	lastReconcile time.Time
 	behind        bool
+
+	watch watchState
 
 	pending   *MoveRequest
 	statusDue bool
@@ -228,6 +242,7 @@ func (m *Manager) Tick(ctx context.Context) error {
 	if err := m.maybeMove(ctx, now); err != nil {
 		return err
 	}
+	m.maybeWatch(ctx, now)
 	m.maybeStatus(ctx, now)
 	m.maybeHeartbeat(ctx, now)
 	m.maybeReconcile(ctx, now)
@@ -379,10 +394,12 @@ func (m *Manager) checkExternal(ctx context.Context, now time.Time) {
 	if err != nil {
 		m.log().Debug("the external check could not run", "error", err)
 		m.tracker.External(Inconclusive)
+		m.noteExternal(now, Reach{}, Reach{}, Inconclusive, err)
 		return
 	}
 	round := Classify(target, control)
 	m.tracker.External(round)
+	m.noteExternal(now, target, control, round, nil)
 	if round == Bad {
 		m.log().Warn("the target country cannot reach this server",
 			"reached", target.Reached, "of", target.Total, "control", control.Reached,
@@ -425,7 +442,10 @@ func (m *Manager) maybeMove(ctx context.Context, now time.Time) error {
 
 func (m *Manager) maybeStatus(ctx context.Context, now time.Time) {
 	last := time.Unix(m.J.Read().LastStatusAt, 0)
-	if !m.statusDue && now.Sub(last) < m.Every.Status {
+	// A change in what the watch sees is worth publishing soon, but not at the
+	// rate it may flap.
+	watchWorthIt := m.watch.due && now.Sub(last) >= minStatusGap
+	if !m.statusDue && !watchWorthIt && now.Sub(last) < m.Every.Status {
 		return
 	}
 	status, err := m.statusBody(ctx, now)
@@ -438,6 +458,7 @@ func (m *Manager) maybeStatus(ctx context.Context, now time.Time) {
 		return
 	}
 	m.statusDue = false
+	m.watch.due = false
 	m.behind = true
 	_ = m.J.Update(func(j *Journal) { j.LastStatusAt = now.Unix() })
 }
@@ -456,6 +477,7 @@ func (m *Manager) statusBody(ctx context.Context, now time.Time) (StatusBody, er
 		CertDaysLeft: m.Cfg.CertDaysLeft(now),
 		LastMove:     SummaryOf(j.Latest()),
 		Revoked:      j.MinEpoch > m.Cfg.Cert.Epoch,
+		Watch:        m.watchSummary(),
 		UpdatedAt:    now.Unix(),
 	}
 	if next, ok := NextAutoMove(m.Cfg.Policy, m.Cfg.CreatedTime(), time.Duration(j.AgeJitterSec)*time.Second); ok {

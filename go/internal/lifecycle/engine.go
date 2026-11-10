@@ -77,6 +77,10 @@ type Host interface {
 	// there is none yet.
 	ReadRegistry() ([]byte, error)
 
+	// ReadWatchLog returns the end of the availability log, or nil if there is
+	// none, for a replacement to carry on from.
+	ReadWatchLog() ([]byte, error)
+
 	// ReadBody and WriteBody keep the configuration this server publishes, so
 	// that it can be republished.
 	ReadBody() ([]byte, error)
@@ -421,6 +425,15 @@ func (e *Engine) successorFiles(inst *vultr.Instance, region string, body *fleet
 	} else if len(pool) > 0 {
 		files = append(files, deploy.File{
 			What: "таблица подставных адресов", Path: node.DefaultPoolPath, Mode: "0600", Content: pool,
+		})
+	}
+	// The availability log goes too: the server that is replaced because it was
+	// blocked is deleted soon after, and what it saw is the record that matters.
+	if raw, err := e.Host.ReadWatchLog(); err != nil {
+		e.log().Warn("could not read the availability log; the new server starts a fresh one", "error", err)
+	} else if len(raw) > 0 {
+		files = append(files, deploy.File{
+			What: "журнал доступности", Path: filepath.Join(next.Data(), WatchLogName), Mode: "0600", Content: raw,
 		})
 	}
 	if devices := e.inheritedDevices(); len(devices) > 0 {

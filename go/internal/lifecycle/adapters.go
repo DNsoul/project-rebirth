@@ -248,6 +248,13 @@ func (h *SystemHost) ReadPool() ([]byte, error) {
 	return raw, err
 }
 
+// ReadWatchLog implements Host: the end of the availability log, for a
+// replacement to carry on from.
+func (h *SystemHost) ReadWatchLog() ([]byte, error) {
+	l := &WatchLog{Path: filepath.Join(h.Cfg.Data(), WatchLogName)}
+	return l.Tail(InheritedWatchBytes)
+}
+
 // ReadRegistry implements Host.
 func (h *SystemHost) ReadRegistry() ([]byte, error) {
 	raw, err := os.ReadFile(enroll.DefaultRegistryPath)

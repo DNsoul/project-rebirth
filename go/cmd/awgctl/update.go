@@ -26,6 +26,7 @@ import (
 func cmdUpdate(args []string) error {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 	files := fs.Bool("files", false, "заодно залить список сетей и правила")
+	managerOnly := fs.Bool("manager", false, "обновить только менеджера, узел и подключения не трогать")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -44,6 +45,13 @@ func cmdUpdate(args []string) error {
 	}
 
 	logf := func(format string, a ...any) { fmt.Printf(format+"\n", a...) }
+
+	if *managerOnly {
+		if *files {
+			return errors.New("-manager и -files вместе не нужны: списки заливаются вместе с узлом")
+		}
+		return updateManagerOnly(root, st, logf)
+	}
 
 	fmt.Println("Собираю узел под Linux…")
 	binary, err := buildNode(root)
@@ -176,5 +184,62 @@ func refreshManagerConfig(cli *remote.Client, st *store.State, logf func(string,
 	} else {
 		logf("  менеджер получил второе место (GitLab) и будет писать и туда")
 	}
+	return nil
+}
+
+// updateManagerOnly replaces just the manager on the current server and
+// restarts it. The node, and so every connection through it, is left alone: the
+// manager is the part that looks after the server, not the part that carries
+// traffic, so this costs nobody a reconnect.
+func updateManagerOnly(root string, st *store.State, logf func(string, ...any)) error {
+	fmt.Println("Собираю менеджер под Linux…")
+	managerBinary, err := buildLinux(root, "awgmgr")
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	signer, err := st.SSHSigner()
+	if err != nil {
+		return err
+	}
+	cli, err := remote.Dial(ctx, st.Server.IP, "root", signer, st.ServerHostKey)
+	if err != nil {
+		return err
+	}
+	defer cli.Close()
+
+	if out, err := cli.Run("test -f " + lifecycle.DefaultConfigPath + " && echo yes || echo no"); err != nil || strings.TrimSpace(out) != "yes" {
+		return errors.New("на сервере нет менеджера: его обновлять нечем")
+	}
+
+	logf("  загружаю менеджер (%d КБ)", len(managerBinary)/1024)
+	if err := cli.Upload(lifecycle.ManagerBinaryPath, "0700", managerBinary); err != nil {
+		return err
+	}
+	if err := cli.Upload(lifecycle.ManagerUnitPath, "0644", []byte(lifecycle.ManagerUnit())); err != nil {
+		return err
+	}
+	if err := refreshManagerConfig(cli, st, logf); err != nil {
+		return err
+	}
+	if _, err := cli.Run("systemctl daemon-reload && systemctl restart " + lifecycle.ManagerService); err != nil {
+		journal, _ := cli.Run("journalctl -u " + lifecycle.ManagerService + " -n 30 --no-pager")
+		return fmt.Errorf("менеджер не перезапустился: %w\n--- журнал ---\n%s", err, journal)
+	}
+
+	// Seen to be running a few seconds later, not just started.
+	select {
+	case <-time.After(5 * time.Second):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	state, _ := cli.Run("systemctl is-active " + lifecycle.ManagerService)
+	if strings.TrimSpace(state) != "active" {
+		journal, _ := cli.Run("journalctl -u " + lifecycle.ManagerService + " -n 30 --no-pager")
+		return fmt.Errorf("менеджер после перезапуска не работает (%s)\n--- журнал ---\n%s", strings.TrimSpace(state), journal)
+	}
+	logf("менеджер перезапущен и работает; узел и подключения не тронуты")
 	return nil
 }
