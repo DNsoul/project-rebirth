@@ -102,6 +102,44 @@ func awgTurnOff(handle C.int) {
 	}
 }
 
+// awgTurnOffAll stops every client this library is running and returns how many
+// there were. The app calls it before it opens a tunnel it has no record of
+// owning: a tunnel that outlived the program that started it has nobody to stop
+// it, and goes on talking to the server with the same key as the new one, which
+// makes the server answer to whichever of the two spoke last.
+//
+//export awgTurnOffAll
+func awgTurnOffAll() C.int {
+	mu.Lock()
+	all := make([]*awglib.Tunnel, 0, len(tunnels))
+	for id, t := range tunnels {
+		all = append(all, t)
+		delete(tunnels, id)
+	}
+	mu.Unlock()
+	for _, t := range all {
+		t.Close()
+	}
+	return C.int(len(all))
+}
+
+// awgRebind is for a change of network: it opens the client's sockets afresh
+// and starts a new handshake at once. It returns 0, -1 for a handle that is not
+// running, or -2 when the sockets could not be opened (awgLastError says why).
+// The sockets have new descriptors afterwards (awgSocketV4, awgSocketV6).
+//
+//export awgRebind
+func awgRebind(handle C.int) C.int {
+	t := lookup(handle)
+	if t == nil {
+		return -1
+	}
+	if err := t.Rebind(); err != nil {
+		return fail(-2, fmt.Errorf("network changed: %w", err))
+	}
+	return 0
+}
+
 func lookup(handle C.int) *awglib.Tunnel {
 	mu.Lock()
 	defer mu.Unlock()
@@ -165,4 +203,4 @@ func awgFree(p *C.char) { C.free(unsafe.Pointer(p)) }
 // it was built with.
 //
 //export awgVersion
-func awgVersion() *C.char { return C.CString("awglib 1") }
+func awgVersion() *C.char { return C.CString("awglib 2") }

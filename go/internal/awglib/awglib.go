@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
@@ -236,8 +237,10 @@ func (l *Logger) device() *device.Logger {
 
 // Tunnel is a running client.
 type Tunnel struct {
+	mu   sync.Mutex
 	dev  *device.Device
 	bind conn.Bind
+	peer device.NoisePublicKey
 }
 
 // Up starts a client on tunDev, which is closed with the tunnel.
@@ -252,20 +255,70 @@ func Up(tunDev tun.Device, s Settings, log *Logger) (*Tunnel, error) {
 		dev.Close()
 		return nil, fmt.Errorf("bring the device up: %w", err)
 	}
-	return &Tunnel{dev: dev, bind: bind}, nil
+	return &Tunnel{dev: dev, bind: bind, peer: device.NoisePublicKey(s.ServerPublic)}, nil
 }
 
 // Close stops the client and closes its TUN device. Calling it again is harmless.
 func (t *Tunnel) Close() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.dev != nil {
 		t.dev.Close()
 		t.dev = nil
 	}
 }
 
+// How hard Rebind tries to open the sockets again: the system may take a moment
+// to hand out the port the old ones had.
+const (
+	rebindTries = 10
+	rebindPause = 500 * time.Millisecond
+)
+
+// ErrClosed is what Rebind says about a tunnel that has been closed.
+var ErrClosed = errors.New("the tunnel is closed")
+
+// Rebind is for the moment the phone changes networks (Wi-Fi to mobile data and
+// back). It opens the client's UDP sockets afresh and asks the server for a new
+// handshake at once.
+//
+// Without it the tunnel waits for its own timers. Those can take a minute or
+// more to notice that the path is new, and after a minute and a half of failed
+// attempts they stop trying until something else is sent. A person sees that
+// as a connection that does not come back until it is switched off and on.
+//
+// The new sockets have new descriptors (see SocketFDs); where the system has to
+// be told to keep them out of the tunnel, that has to be done again.
+func (t *Tunnel) Rebind() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.dev == nil {
+		return ErrClosed
+	}
+	var err error
+	for i := 0; i < rebindTries; i++ {
+		if err = t.dev.BindUpdate(); err == nil {
+			break
+		}
+		time.Sleep(rebindPause)
+	}
+	if err != nil {
+		return fmt.Errorf("open the sockets again: %w", err)
+	}
+	// A handshake that was sent a moment ago is not repeated (the library keeps
+	// its own pace), but one that is overdue goes out now, and the count of
+	// failed attempts starts again.
+	if p := t.dev.LookupPeer(t.peer); p != nil {
+		_ = p.SendHandshakeInitiation(false)
+	}
+	return nil
+}
+
 // LatestHandshake is when the server last completed a handshake with this
 // client, and whether it has done so at all.
 func (t *Tunnel) LatestHandshake() (time.Time, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.dev == nil {
 		return time.Time{}, false
 	}
@@ -298,6 +351,11 @@ func parseHandshake(uapi string) (time.Time, bool) {
 // to keep them out of the tunnel itself.
 func (t *Tunnel) SocketFDs() (v4, v6 int) {
 	v4, v6 = -1, -1
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.dev == nil {
+		return
+	}
 	peek, ok := t.bind.(interface {
 		PeekLookAtSocketFd4() (int, error)
 		PeekLookAtSocketFd6() (int, error)

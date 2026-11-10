@@ -25,10 +25,16 @@ import android.os.Build
 class AwgVpnService : VpnService() {
 
     private var status = "VPN работает"
+    private var watcher: NetworkWatcher? = null
 
     override fun onCreate() {
         super.onCreate()
         instance = this
+        // For as long as there is a VPN: when the phone moves to another network
+        // the program that looks after the tunnel is told, so that the tunnel
+        // finds the server on the new path at once.
+        watcher = NetworkWatcher(this) { available -> onNetworkChanged?.invoke(available) }
+            .also { it.start() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -39,6 +45,8 @@ class AwgVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        watcher?.stop()
+        watcher = null
         instance = null
         super.onDestroy()
     }
@@ -118,6 +126,11 @@ class AwgVpnService : VpnService() {
 
         val pfd = builder.establish()
             ?: throw IllegalStateException("the system refused to open the VPN interface (is the permission still granted?)")
+        // The networks the tunnel's own packets travel by are whichever the system
+        // uses for everything else, and follow it from Wi-Fi to mobile data. Left
+        // unsaid, some versions of Android treat the VPN as a metered connection
+        // (the way the official WireGuard and AmneziaWG clients say it once, here).
+        setUnderlyingNetworks(null)
         return pfd.detachFd()
     }
 
@@ -131,6 +144,13 @@ class AwgVpnService : VpnService() {
         /** Called when the system takes the VPN away from the app. */
         @Volatile
         var onRevoked: (() -> Unit)? = null
+
+        /**
+         * Called when the phone has moved to another network. The argument says
+         * whether it has any network left to reach the internet by.
+         */
+        @Volatile
+        var onNetworkChanged: ((Boolean) -> Unit)? = null
 
         /** Starts the service if it is not running and waits until it is. */
         fun start(context: Context): AwgVpnService {

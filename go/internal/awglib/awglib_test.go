@@ -3,6 +3,7 @@ package awglib
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -312,6 +313,129 @@ func TestAWrongServerKeyNeverHandshakes(t *testing.T) {
 	}
 	if _, ok := tunnel.LatestHandshake(); ok {
 		t.Error("a handshake with the wrong key")
+	}
+}
+
+// pairOnLoopback starts a real server device that answers "pong from the server"
+// on 10.8.0.1:8080, and a client brought up by Up against it, the way the app
+// brings one up.
+func pairOnLoopback(t *testing.T) (*Tunnel, *netstack.Net) {
+	t.Helper()
+	serverKP, _ := awg.GenerateKeypair()
+	clientKP, _ := awg.GenerateKeypair()
+	params, err := awg.GenerateParams()
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := freeUDPPort(t)
+
+	serverTun, serverNet, err := netstack.CreateNetTUN([]netip.Addr{netip.MustParseAddr("10.8.0.1")}, nil, awg.MTU)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := device.NewDevice(serverTun, conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, ""))
+	t.Cleanup(server.Close)
+	if err := server.IpcSet(awg.ServerConfig{
+		PrivateKey: serverKP.Private, ListenPort: port, Params: params,
+		Peers: []awg.Peer{{PublicKey: clientKP.Public, AllowedIPs: []string{"10.8.0.7/32"}}},
+	}.UAPI()); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Up(); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := serverNet.ListenTCPAddrPort(netip.MustParseAddrPort("10.8.0.1:8080"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = io.WriteString(c, "pong from the server")
+			c.Close()
+		}
+	}()
+
+	settings, err := ParseConf(awg.ClientConfig{
+		PrivateKey: clientKP.Private, Address: "10.8.0.7/32", DNS: []string{"10.8.0.1"},
+		Params: params, ServerPublicKey: serverKP.Public,
+		Endpoint: fmt.Sprintf("127.0.0.1:%d", port), AllowedIPs: []string{"10.8.0.0/24"}, Keepalive: 25,
+	}.Render())
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTun, clientNet, err := netstack.CreateNetTUN(addrsOf(settings.Addresses), settings.DNS, settings.MTU)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tunnel, err := Up(clientTun, settings, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(tunnel.Close)
+	return tunnel, clientNet
+}
+
+func pingThroughTheTunnel(t *testing.T, clientNet *netstack.Net) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	c, err := clientNet.DialContext(ctx, "tcp", "10.8.0.1:8080")
+	if err != nil {
+		t.Fatalf("dial through the tunnel: %v", err)
+	}
+	defer c.Close()
+	if reply, _ := io.ReadAll(c); string(reply) != "pong from the server" {
+		t.Errorf("reply = %q", reply)
+	}
+}
+
+// After the phone changes networks the client opens its sockets afresh and asks
+// for a new handshake: data still crosses, and a handshake that was due really is
+// made at once rather than whenever the old timers get round to it.
+func TestRebindKeepsTheTunnelWorkingAndStartsANewHandshake(t *testing.T) {
+	tunnel, clientNet := pairOnLoopback(t)
+	pingThroughTheTunnel(t, clientNet)
+	first, ok := tunnel.LatestHandshake()
+	if !ok {
+		t.Fatal("no handshake to start from")
+	}
+
+	// The library does not repeat a handshake within five seconds of the last
+	// one, so the change of network is simulated after that.
+	time.Sleep(5200 * time.Millisecond)
+	if err := tunnel.Rebind(); err != nil {
+		t.Fatal(err)
+	}
+	if v4, _ := tunnel.SocketFDs(); v4 < 0 {
+		t.Errorf("no socket after rebinding (v4=%d)", v4)
+	}
+	pingThroughTheTunnel(t, clientNet)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if again, ok := tunnel.LatestHandshake(); ok && again.After(first) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("still the handshake of %v, no new one after rebinding", first)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func TestRebindOfAClosedTunnelSaysSo(t *testing.T) {
+	tunnel, _ := pairOnLoopback(t)
+	tunnel.Close()
+	if err := tunnel.Rebind(); !errors.Is(err, ErrClosed) {
+		t.Errorf("rebinding a closed tunnel gave %v", err)
+	}
+	if v4, v6 := tunnel.SocketFDs(); v4 != -1 || v6 != -1 {
+		t.Errorf("a closed tunnel reports sockets (%d, %d)", v4, v6)
 	}
 }
 

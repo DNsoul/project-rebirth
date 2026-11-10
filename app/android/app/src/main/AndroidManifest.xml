@@ -1,5 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- To hear that the phone has moved from Wi-Fi to mobile data or back, so
+         that the tunnel finds the server on the new path at once. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- A VPN that the system may stop to save battery is no VPN: the service
          runs in the foreground, with a notification saying what it is doing. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

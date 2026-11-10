@@ -2,11 +2,13 @@ package org.awgrotator.awg_client
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.VpnService
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
@@ -18,15 +20,19 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
-import java.util.concurrent.Executors
 
 /**
- * The bridge between the Dart code and what only Android can do: ask the user
- * for the VPN permission, get a VPN interface, keep sockets out of it, say which
- * device this is. The tunnel itself runs in libawg.so, which Dart calls directly.
+ * The screen, and what only a screen can do for the Dart code: ask the user for a
+ * permission, hand a download to the installer. Everything else the Dart code asks
+ * of Android is answered by [BridgeHandler], which does not need a screen. The
+ * tunnel itself runs in libawg.so, which Dart calls directly.
+ *
+ * The screen is not the owner of anything that matters. The Flutter engine, and the
+ * Dart program in it that looks after the tunnel, belong to the process
+ * ([RebirthEngine]) and go on when this screen is closed from the list of recent
+ * apps; a new screen attaches to them.
  */
 class MainActivity : FlutterActivity() {
-    private val worker = Executors.newSingleThreadExecutor()
     private val ui = Handler(Looper.getMainLooper())
     private var pendingPermission: MethodChannel.Result? = null
     private var pendingNotifications: MethodChannel.Result? = null
@@ -34,66 +40,36 @@ class MainActivity : FlutterActivity() {
     private var waitingForSettings: MethodChannel.Result? = null
     private var settingsAnswer: () -> String = { "denied" }
     private var leftForSettings = false
-    private lateinit var channel: MethodChannel
 
-    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
-        super.configureFlutterEngine(flutterEngine)
-        channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
-        AwgVpnService.onRevoked = { ui.post { channel.invokeMethod("revoked", null) } }
-        channel.setMethodCallHandler { call, result -> handle(call, result) }
+    /** The engine of the process, not one made for this screen. */
+    override fun provideFlutterEngine(context: Context): FlutterEngine? = RebirthEngine.get(context)
+
+    /** Closing the screen must not stop the program that looks after the tunnel. */
+    override fun shouldDestroyEngineWithHost(): Boolean = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        ScreenHooks.current = this
+        super.onCreate(savedInstanceState)
     }
 
     override fun onDestroy() {
-        // The Dart side that would hear about a revocation is gone with the
-        // engine; the service itself carries on.
-        AwgVpnService.onRevoked = null
+        if (ScreenHooks.current === this) ScreenHooks.current = null
+        // Questions put to the person that this screen will never hear the answer
+        // to: the Dart side is told, so that it does not wait for ever.
+        for (pending in listOf(pendingPermission, pendingNotifications, pendingBattery, waitingForSettings)) {
+            pending?.error("closed", "the screen was closed before the answer", null)
+        }
+        pendingPermission = null
+        pendingNotifications = null
+        pendingBattery = null
+        waitingForSettings = null
         super.onDestroy()
     }
 
-    private fun handle(call: MethodCall, result: MethodChannel.Result) {
+    /** The calls that need a screen; [BridgeHandler] sends them here. */
+    fun handleScreenCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "prepare" -> prepare(result)
-
-            "establish" -> {
-                val session = call.argument<String>("session") ?: "AWG"
-                val addresses = call.argument<List<String>>("addresses") ?: emptyList()
-                val routes = call.argument<List<String>>("routes") ?: emptyList()
-                val dns = call.argument<List<String>>("dns") ?: emptyList()
-                val mtu = call.argument<Int>("mtu") ?: 1280
-                // Starting the service waits for it, so this is not done on the
-                // thread that draws the screen.
-                worker.execute {
-                    try {
-                        val fd = AwgVpnService.start(applicationContext)
-                            .establishTun(session, addresses, routes, dns, mtu)
-                        ui.post { result.success(fd) }
-                    } catch (e: Exception) {
-                        ui.post { result.error("establish", e.message, null) }
-                    }
-                }
-            }
-
-            "protect" -> {
-                val fd = call.argument<Int>("fd") ?: -1
-                result.success(AwgVpnService.instance?.protect(fd) ?: false)
-            }
-
-            "release" -> {
-                AwgVpnService.release()
-                result.success(null)
-            }
-
-            "status" -> {
-                // What the notification says. There is nothing to update when the
-                // service is not running, which is not a failure.
-                AwgVpnService.instance?.setStatus(call.argument<String>("text") ?: "")
-                result.success(null)
-            }
-
-            "androidId" ->
-                result.success(Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID))
-
-            "filesDir" -> result.success(filesDir.absolutePath)
 
             "installApk" -> installApk(call.argument<String>("path") ?: "", result)
 
@@ -349,7 +325,6 @@ class MainActivity : FlutterActivity() {
     }
 
     companion object {
-        private const val CHANNEL = "awg/vpn"
         private const val REQUEST_VPN = 0x7670
         private const val REQUEST_NOTIFICATIONS = 0x6e74
         private const val REQUEST_BATTERY = 0x6274

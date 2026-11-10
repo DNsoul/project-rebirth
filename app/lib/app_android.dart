@@ -75,6 +75,14 @@ Future<void> runAndroid(List<String> args) async {
     return;
   }
 
+  // The system says when the phone has moved from one network to another (Wi-Fi
+  // to mobile data and back); the controller makes the tunnel follow.
+  final networkChanges = StreamController<bool>.broadcast();
+  bridge.onNetworkChanged = (available) {
+    log('network: ${available ? 'changed' : 'gone'}');
+    networkChanges.add(available);
+  };
+
   final controller = ConnectionController(
     bootstrap: bootstrap,
     gist: gistSourceFor(bootstrap),
@@ -85,6 +93,7 @@ Future<void> runAndroid(List<String> args) async {
     machine: AndroidMachineId(bridge),
     transportFactory: () => UdpEnrollTransport(log: log),
     deviceName: 'android',
+    networkChanges: networkChanges.stream,
     log: log,
   );
 

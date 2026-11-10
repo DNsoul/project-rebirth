@@ -17,6 +17,15 @@ abstract class AwgNative {
   /// running.
   void turnOff(int handle);
 
+  /// Stops every client the library is running and says how many there were.
+  /// For tunnels that outlived the program that started them.
+  int turnOffAll();
+
+  /// For a change of network: opens the client's sockets afresh and starts a
+  /// new handshake at once. 0 when it worked, a negative number when it did not
+  /// ([lastError] says why). The sockets have new descriptors afterwards.
+  int rebind(int handle);
+
   /// Unix seconds of the last handshake, 0 when there has not been one, and -1
   /// for a handle that is not running.
   int latestHandshake(int handle);
@@ -40,6 +49,12 @@ class FfiAwgNative implements AwgNative {
         >('awgTurnOn');
     _turnOff = _lib.lookupFunction<Void Function(Int32), void Function(int)>(
       'awgTurnOff',
+    );
+    _turnOffAll = _lib.lookupFunction<Int32 Function(), int Function()>(
+      'awgTurnOffAll',
+    );
+    _rebind = _lib.lookupFunction<Int32 Function(Int32), int Function(int)>(
+      'awgRebind',
     );
     _handshake = _lib.lookupFunction<Int64 Function(Int32), int Function(int)>(
       'awgLatestHandshake',
@@ -68,6 +83,8 @@ class FfiAwgNative implements AwgNative {
   final DynamicLibrary _lib;
   late final int Function(Pointer<Utf8>, int) _turnOn;
   late final void Function(int) _turnOff;
+  late final int Function() _turnOffAll;
+  late final int Function(int) _rebind;
   late final int Function(int) _handshake;
   late final int Function(int) _socket4;
   late final int Function(int) _socket6;
@@ -99,6 +116,12 @@ class FfiAwgNative implements AwgNative {
 
   @override
   void turnOff(int handle) => _turnOff(handle);
+
+  @override
+  int turnOffAll() => _turnOffAll();
+
+  @override
+  int rebind(int handle) => _rebind(handle);
 
   @override
   int latestHandshake(int handle) => _handshake(handle);

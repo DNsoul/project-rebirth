@@ -61,6 +61,19 @@ class AndroidTunnelDriver implements TunnelDriver {
       await uninstall(name);
     }
 
+    // When this driver has no tunnel of its own, whatever the library is still
+    // running belongs to nobody: it was started by a program that has since gone
+    // (the screen is rebuilt, or the app restarted inside a process that stayed).
+    // Left alone, it goes on talking to the server with the same key as the new
+    // one, and the server answers whichever of the two spoke last, so half of
+    // what comes back is lost.
+    if (_handles.isEmpty) {
+      final strays = native.turnOffAll();
+      if (strays > 0) {
+        log?.call('stopped $strays tunnel(s) that nobody owned');
+      }
+    }
+
     final int fd;
     try {
       fd = await bridge.establish(
@@ -87,14 +100,18 @@ class AndroidTunnelDriver implements TunnelDriver {
     }
     _handles[name] = handle;
 
-    // Its sockets must not be sent into the tunnel they carry. With the routes
-    // this app uses they would not be, but a configuration may route everything.
+    await _keepSocketsOutOfTheTunnel(handle);
+    log?.call('tunnel $name is up (handle $handle)');
+  }
+
+  /// Its sockets must not be sent into the tunnel they carry. With the routes
+  /// this app uses they would not be, but a configuration may route everything.
+  Future<void> _keepSocketsOutOfTheTunnel(int handle) async {
     for (final socket in [native.socketV4(handle), native.socketV6(handle)]) {
       if (socket >= 0 && !await bridge.protect(socket)) {
         log?.call('could not keep socket $socket out of the tunnel');
       }
     }
-    log?.call('tunnel $name is up (handle $handle)');
   }
 
   @override
@@ -107,6 +124,22 @@ class AndroidTunnelDriver implements TunnelDriver {
       await bridge.release();
     }
     log?.call('tunnel $name is down');
+  }
+
+  @override
+  Future<void> rebind(String name) async {
+    _checkName(name);
+    final handle = _handles[name];
+    if (handle == null) return;
+    final code = native.rebind(handle);
+    if (code != 0) {
+      throw TunnelException(
+        'Не удалось заново открыть сокеты туннеля. (${native.lastError()})',
+      );
+    }
+    // The sockets are new, and the system has to be told about them again.
+    await _keepSocketsOutOfTheTunnel(handle);
+    log?.call('tunnel $name: sockets reopened for the new network');
   }
 
   @override

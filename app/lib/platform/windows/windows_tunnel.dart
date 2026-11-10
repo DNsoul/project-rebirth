@@ -193,6 +193,11 @@ class WindowsTunnelDriver implements TunnelDriver {
     return parseTunnelServiceKeys('${r.stdout}');
   }
 
+  /// Nothing to do: the tunnel service watches the network adapters itself and
+  /// finds the server again when the route changes.
+  @override
+  Future<void> rebind(String name) async {}
+
   // ----------------------------------------------------------------- helpers
 
   /// Waits until the tunnel's service is running (or gone).

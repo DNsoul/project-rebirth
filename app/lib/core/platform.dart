@@ -44,6 +44,12 @@ abstract class TunnelDriver {
   /// The names of the tunnels this app has installed and not removed. After a
   /// crash these are what has to be cleaned up.
   Future<List<String>> installed();
+
+  /// The network the machine reaches the internet by has changed (Wi-Fi to mobile
+  /// data, or back). Makes the tunnel find the server on the new path at once,
+  /// rather than leaving it to its own timers. Harmless if there is no such
+  /// tunnel, and a no-op where the system's own client already does this.
+  Future<void> rebind(String name);
 }
 
 /// Makes the machine ask the server's resolver, and only it, for names. Without

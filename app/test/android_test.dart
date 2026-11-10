@@ -48,6 +48,32 @@ class FakeNative implements AwgNative {
   @override
   void turnOff(int handle) => calls.add('turnOff $handle');
 
+  /// How many tunnels the library finds running that nobody owns.
+  int strays = 0;
+
+  @override
+  int turnOffAll() {
+    calls.add('turnOffAll');
+    final n = strays;
+    strays = 0;
+    return n;
+  }
+
+  /// What [rebind] answers, and what it did to each handle's sockets.
+  int rebindResult = 0;
+  final rebound = <int>[];
+
+  @override
+  int rebind(int handle) {
+    calls.add('rebind $handle');
+    rebound.add(handle);
+    if (rebindResult == 0) {
+      // New sockets, new descriptors.
+      sockets[handle] = [200 + handle + rebound.length, -1];
+    }
+    return rebindResult;
+  }
+
   @override
   int latestHandshake(int handle) => handshakes[handle] ?? 0;
 
@@ -76,6 +102,9 @@ class FakeBridge implements VpnBridge {
 
   @override
   void Function()? onRevoked;
+
+  @override
+  void Function(bool available)? onNetworkChanged;
 
   @override
   Future<bool> prepare() async {
@@ -322,6 +351,96 @@ void main() {
       expect(await driver.installed(), ['awgr-a']);
     });
 
+    test(
+      'stops tunnels nobody owns before it opens its own: a program that went '
+      'away leaves them running, and two with one key spoil each other',
+      () async {
+        native.strays = 3;
+        await driver.install(name: 'awgr-a', conf: mainConf);
+
+        expect(native.calls.first, 'turnOffAll');
+        expect(
+          native.calls.indexOf('turnOffAll'),
+          lessThan(native.calls.indexOf('turnOn')),
+          reason: 'the strangers go before the new one starts',
+        );
+        expect(log.any((l) => l.contains('3 tunnel')), isTrue);
+        expect(await driver.installed(), ['awgr-a']);
+      },
+    );
+
+    test('does not touch the tunnels of its own when it opens a second one '
+        '(a move to a new server keeps the old until the new works)', () async {
+      await driver.install(name: 'awgr-a', conf: mainConf);
+      native.calls.clear();
+      await driver.install(name: 'awgr-b', conf: mainConf);
+
+      expect(native.calls, ['turnOn']);
+      expect(await driver.installed(), unorderedEquals(['awgr-a', 'awgr-b']));
+    });
+
+    test(
+      'a tunnel that was brought up again is not mistaken for a stray',
+      () async {
+        await driver.install(name: 'awgr-a', conf: mainConf);
+        await driver.uninstall('awgr-a');
+        native.calls.clear();
+        await driver.install(name: 'awgr-a', conf: mainConf);
+        expect(native.calls.first, 'turnOffAll');
+        expect(
+          native.calls.where((c) => c.startsWith('turnOff ')),
+          isEmpty,
+          reason: 'only the library-wide sweep, nothing aimed at a handle',
+        );
+      },
+    );
+
+    group('when the network changes', () {
+      test('the sockets are opened afresh and the system is told about the '
+          'new ones', () async {
+        await driver.install(name: 'awgr-a', conf: mainConf);
+        bridge.protectedFds.clear();
+
+        await driver.rebind('awgr-a');
+
+        expect(native.rebound, [1]);
+        expect(
+          bridge.protectedFds,
+          [native.sockets[1]![0]],
+          reason: 'the descriptor after rebinding, not the one from before',
+        );
+        expect(log.any((l) => l.contains('reopened')), isTrue);
+      });
+
+      test('a tunnel that is not there is left alone', () async {
+        await driver.rebind('awgr-a');
+        expect(native.rebound, isEmpty);
+      });
+
+      test('sockets that could not be reopened are reported', () async {
+        await driver.install(name: 'awgr-a', conf: mainConf);
+        native.rebindResult = -2;
+        native.error = 'open the sockets again: boom';
+        await expectLater(
+          driver.rebind('awgr-a'),
+          throwsA(
+            isA<TunnelException>().having(
+              (e) => e.message,
+              'message',
+              contains('boom'),
+            ),
+          ),
+        );
+      });
+
+      test('only this app\'s tunnel names are accepted', () async {
+        await expectLater(
+          driver.rebind('wg0'),
+          throwsA(isA<TunnelException>()),
+        );
+      });
+    });
+
     test('a handshake is a time, and "none yet" is null', () async {
       await driver.install(name: 'awgr-a', conf: mainConf);
       expect(await driver.latestHandshake('awgr-a'), isNull);
@@ -374,7 +493,11 @@ void main() {
           ),
         ),
       );
-      expect(native.calls, isEmpty);
+      expect(
+        native.calls,
+        isNot(contains('turnOn')),
+        reason: 'no interface, so nothing is started on it',
+      );
     });
 
     test(
@@ -394,7 +517,11 @@ void main() {
     test('installing the same name again stops the first one first', () async {
       await driver.install(name: 'awgr-a', conf: mainConf);
       await driver.install(name: 'awgr-a', conf: mainConf);
-      expect(native.calls, ['turnOn', 'turnOff 1', 'turnOn']);
+      expect(
+        native.calls.where((c) => c != 'turnOffAll'),
+        ['turnOn', 'turnOff 1', 'turnOn'],
+        reason: 'the sweep for strays is a separate matter, tested above',
+      );
       expect(await driver.installed(), ['awgr-a']);
     });
 

@@ -418,6 +418,16 @@ class FakeTunnel implements TunnelDriver {
   @override
   Future<List<String>> installed() async => [..._installed.keys, ...foreign];
 
+  /// Set to make the nudge after a change of network fail.
+  Object? rebindError;
+
+  @override
+  Future<void> rebind(String name) async {
+    log.add('rebind $name');
+    final e = rebindError;
+    if (e != null) throw e;
+  }
+
   Iterable<String> get ours => _installed.keys;
 
   String? confOf(String name) => _installed[name]?.conf;

@@ -55,6 +55,12 @@ abstract class VpnBridge {
   /// Called when the system takes the VPN away from the app: the user withdrew
   /// the permission, or another VPN app took over.
   void Function()? onRevoked;
+
+  /// Called when the network the phone reaches the internet by has changed (Wi-Fi
+  /// to mobile data, a new Wi-Fi, a lost one). [available] is false when there is
+  /// no usable network left at all. Only real changes are reported, not every
+  /// flicker of the signal.
+  void Function(bool available)? onNetworkChanged;
 }
 
 /// The real bridge, over a method channel.
@@ -64,6 +70,10 @@ class MethodChannelVpnBridge implements VpnBridge {
     _channel.setMethodCallHandler((call) async {
       if (call.method == 'revoked') {
         onRevoked?.call();
+      } else if (call.method == 'networkChanged') {
+        final args = call.arguments;
+        final available = args is Map ? args['available'] != false : true;
+        onNetworkChanged?.call(available);
       }
       return null;
     });
@@ -75,6 +85,9 @@ class MethodChannelVpnBridge implements VpnBridge {
 
   @override
   void Function()? onRevoked;
+
+  @override
+  void Function(bool available)? onNetworkChanged;
 
   @override
   Future<bool> prepare() async =>

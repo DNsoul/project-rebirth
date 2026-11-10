@@ -4,6 +4,7 @@ import 'package:awg_client/core/app_state.dart';
 import 'package:awg_client/core/controller.dart';
 import 'package:awg_client/core/gist_source.dart'
     show GistSnapshot, GistSource, MirroredSource;
+import 'package:awg_client/core/platform.dart' show TunnelException;
 import 'package:awg_proto/awg_proto.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -18,6 +19,7 @@ class Rig {
   static Future<Rig> create({
     PersistedState? saved,
     GistSource Function(FakeGist gist)? wrap,
+    Stream<bool>? networkChanges,
   }) async {
     final rig = Rig._(MemoryStateStore(saved));
     rig.tunnel = FakeTunnel(rig.fleet, rig.clock);
@@ -36,6 +38,7 @@ class Rig {
       now: rig.clock.now,
       sleep: rig.clock.sleep,
       runTimers: false,
+      networkChanges: networkChanges,
       log: rig.logs.add,
     );
     return rig;
@@ -966,6 +969,186 @@ void main() {
       expect(rig.status.region, 'waw', reason: rig.status.message);
       expect(rig.status.lostContact, isFalse);
     });
+  });
+
+  // A phone moves from Wi-Fi to mobile data and back all day. The tunnel was made
+  // for the path it had, and left to its own timers it comes back after a minute
+  // or never; the person's remedy was to switch it off and on.
+  group('when the network changes', () {
+    late StreamController<bool> net;
+
+    // Lets the app finish whatever it is doing.
+    Future<void> settle() async {
+      for (var i = 0; i < 400; i++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+    }
+
+    int rebinds() => rig.tunnel.log.where((l) => l.startsWith('rebind')).length;
+
+    setUp(() async {
+      net = StreamController<bool>.broadcast();
+      rig = await Rig.create(networkChanges: net.stream);
+      sto = rig.fleet.add('203.0.113.9:41820', 11, region: 'sto');
+      await rig.publish(sto);
+    });
+
+    tearDown(() => net.close());
+
+    test('the tunnel is told to find the server again, and that is enough when '
+        'the server answers', () async {
+      await rig.controller.connect();
+
+      net.add(true);
+      await settle();
+
+      expect(rig.tunnel.log, contains('rebind awgr-a'));
+      expect(rig.tunnels, ['awgr-a'], reason: 'no new tunnel was needed');
+      expect(rig.status.phase, Phase.connected);
+      expect(rig.status.lostContact, isFalse);
+      expect(
+        rig.logs.any((l) => l.contains('answered on the new path')),
+        isTrue,
+      );
+    });
+
+    test('when nothing answers on the new path the tunnel is brought up again, '
+        'and the old one goes only once the new one works', () async {
+      await rig.controller.connect();
+      rig.tunnel.handshakeAge = const Duration(minutes: 10);
+      final before = rig.tunnel.log.length;
+
+      net.add(true);
+      await settle();
+
+      final after = rig.tunnel.log.sublist(before);
+      expect(after, contains('rebind awgr-a'));
+      expect(after, containsAllInOrder(['install awgr-b', 'uninstall awgr-a']));
+      expect(rig.tunnels, ['awgr-b']);
+      expect(rig.status.phase, Phase.connected);
+      expect(rig.status.lostContact, isFalse);
+    });
+
+    test('with no network at all it says so and waits', () async {
+      await rig.controller.connect();
+
+      net.add(false);
+      await settle();
+      expect(rig.status.lostContact, isTrue);
+      expect(rig.tunnel.log, isNot(contains('rebind awgr-a')));
+      expect(rig.tunnels, ['awgr-a'], reason: 'nothing to bring up against');
+
+      net.add(true);
+      await settle();
+      expect(rig.tunnel.log, contains('rebind awgr-a'));
+      expect(rig.status.lostContact, isFalse);
+    });
+
+    test(
+      'the health check does not call a lack of network a live tunnel',
+      () async {
+        await rig.controller.connect();
+        net.add(false);
+        await settle();
+
+        await rig.controller.checkHealthNow();
+        expect(
+          rig.status.lostContact,
+          isTrue,
+          reason: 'the handshake is fresh, but there is no network to carry it',
+        );
+      },
+    );
+
+    test('nothing happens when there is no connection to look after', () async {
+      net.add(true);
+      await settle();
+      expect(rig.tunnel.log, isEmpty);
+      expect(rig.status.phase, Phase.idle);
+    });
+
+    test(
+      'a burst of changes is answered by where it ended, not step by step',
+      () async {
+        await rig.controller.connect();
+
+        for (var i = 0; i < 6; i++) {
+          net.add(i.isEven);
+        }
+        await settle();
+
+        expect(
+          rebinds(),
+          lessThanOrEqualTo(2),
+          reason: 'one pass, and one more for what arrived during it',
+        );
+        expect(rig.status.phase, Phase.connected);
+      },
+    );
+
+    test(
+      'a nudge that fails is not the end: the server is still looked for',
+      () async {
+        await rig.controller.connect();
+        rig.tunnel.rebindError = TunnelException('boom');
+
+        net.add(true);
+        await settle();
+
+        expect(rig.logs.any((l) => l.contains('could not be nudged')), isTrue);
+        expect(rig.status.phase, Phase.connected);
+        expect(rig.status.lostContact, isFalse);
+      },
+    );
+
+    test('disconnecting stops the recovery', () async {
+      await rig.controller.connect();
+      rig.tunnel.handshakeAge = const Duration(minutes: 10);
+
+      net.add(true);
+      await rig.controller.disconnect();
+      await settle();
+
+      expect(rig.status.phase, Phase.idle);
+      expect(rig.tunnels, isEmpty);
+    });
+
+    test('a handshake that cannot be read at all does not set off the repair: '
+        'only an old one proves the tunnel is dead', () async {
+      await rig.controller.connect();
+      sto.alive = false; // the fake tunnel then has nothing to report
+
+      await rig.controller.checkHealthNow();
+      await settle();
+
+      expect(rig.status.lostContact, isTrue);
+      expect(rig.tunnels, ['awgr-a'], reason: 'nothing was brought up again');
+      expect(rig.logs.any((l) => l.contains('health: no contact')), isFalse);
+    });
+
+    test(
+      'a tunnel that has been silent for minutes while the network is there is '
+      'brought up again without anyone asking, but not more than once in '
+      'a minute and a half',
+      () async {
+        await rig.controller.connect();
+        rig.tunnel.handshakeAge = const Duration(minutes: 5);
+
+        await rig.controller.checkHealthNow();
+        await settle();
+        expect(rig.tunnels, ['awgr-b'], reason: 'brought up again');
+        expect(rig.logs.any((l) => l.contains('health: no contact')), isTrue);
+
+        await rig.controller.checkHealthNow();
+        await settle();
+        expect(rig.tunnels, ['awgr-b'], reason: 'too soon to try again');
+
+        rig.clock.advance(const Duration(seconds: 100));
+        await rig.controller.checkHealthNow();
+        await settle();
+        expect(rig.tunnels, ['awgr-a'], reason: 'the next try, in due time');
+      },
+    );
   });
 
   // The app has to answer a press at once, say what it is doing, and let go of a

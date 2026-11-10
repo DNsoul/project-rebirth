@@ -137,10 +137,14 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     this.healthEvery = const Duration(seconds: 10),
     this.updateEvery = const Duration(hours: 6),
     this.runTimers = true,
+    this.networkAnswerWithin = const Duration(seconds: 15),
+    Stream<bool>? networkChanges,
     void Function(String line)? log,
   }) : _now = now ?? DateTime.now,
        _sleep = sleep ?? ((Duration d) => Future<void>.delayed(d)),
-       _log = log ?? ((_) {});
+       _log = log ?? ((_) {}) {
+    _networkSub = networkChanges?.listen(_networkChanged);
+  }
 
   final Bootstrap bootstrap;
   final GistSource gist;
@@ -164,6 +168,10 @@ class ConnectionController implements ConnectionView, ReleaseSource {
   /// Off in tests, which call [pollNow] and [checkHealthNow] themselves.
   final bool runTimers;
 
+  /// After the network changes, how long the tunnel is given to reach the server
+  /// on the new path before it is brought up again from scratch.
+  final Duration networkAnswerWithin;
+
   final DateTime Function() _now;
   final Future<void> Function(Duration) _sleep;
   final void Function(String) _log;
@@ -186,6 +194,11 @@ class ConnectionController implements ConnectionView, ReleaseSource {
   DateTime? _lastRefresh;
   DateTime? _retryNewServerAfter;
   Future<void> _lock = Future<void>.value();
+  StreamSubscription<bool>? _networkSub;
+  DateTime? _lastHeal;
+  bool _networkRunning = false;
+  bool _networkAgain = false;
+  bool _networkAvailable = true;
 
   /// Belongs to the operation that is running; replaced when the next one starts.
   CancelToken _token = CancelToken();
@@ -400,6 +413,8 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     _stopping = true;
     _token.cancel();
     _stopTimers();
+    await _networkSub?.cancel();
+    _networkSub = null;
     _updateTimer?.cancel();
     _updateTimer = null;
     await _exclusive('dispose', () async {
@@ -527,7 +542,9 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     // WireGuard renews the handshake every two minutes while there is traffic,
     // and the keepalive makes sure there is. Three minutes is one missed round.
     final lost =
-        hs == null || _now().difference(hs) > const Duration(minutes: 3);
+        !_networkAvailable ||
+        hs == null ||
+        _now().difference(hs) > const Duration(minutes: 3);
     if (lost != _status.lostContact && _status.phase == Phase.connected) {
       _emit(
         AppStatus(
@@ -539,12 +556,152 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         ),
       );
     }
-    if (lost) {
+    if (lost && _networkAvailable) {
       final last = _lastRefresh;
       if (last == null ||
           _now().difference(last) > const Duration(seconds: 30)) {
         await pollNow();
       }
+      // The server has not been heard from for minutes and the network is there,
+      // so the cause is not a new server: whatever it is, the tunnel is dead, and
+      // the way back is the one a person takes (off and on). Not more than once a
+      // minute and a half, so a server that really is down is not hammered.
+      //
+      // Only an old handshake counts. One that could not be read at all proves
+      // nothing: on Windows it is a program asked for the answer, and it may fail
+      // for reasons of its own.
+      final healed = _lastHeal;
+      if (_status.lostContact &&
+          hs != null &&
+          !_networkRunning &&
+          (healed == null ||
+              _now().difference(healed) > const Duration(seconds: 90))) {
+        _lastHeal = _now();
+        _log('health: no contact for minutes, bringing the tunnel up again');
+        unawaited(_networkChanged(true));
+      }
+    }
+  }
+
+  // ----------------------------------------------------------------- network
+
+  /// The network the phone reaches the internet by has changed, or gone.
+  ///
+  /// The tunnel was made for the old path. Left to itself it waits for its own
+  /// timers to notice, which takes a minute or more, and after a minute and a
+  /// half of failed attempts it stops trying until something else is sent: a
+  /// connection that does not come back until it is switched off and on.
+  ///
+  /// Changes that arrive while one is being dealt with are folded into a single
+  /// further pass, so a burst of them (Wi-Fi lost, mobile data found, Wi-Fi back)
+  /// is answered by where things ended up and not by every step on the way.
+  Future<void> _networkChanged(bool available) async {
+    _networkAvailable = available;
+    if (_networkRunning) {
+      _networkAgain = true;
+      return;
+    }
+    _networkRunning = true;
+    try {
+      do {
+        _networkAgain = false;
+        await _afterNetworkChange();
+      } while (_networkAgain && !_stopping);
+    } finally {
+      _networkRunning = false;
+    }
+  }
+
+  Future<void> _afterNetworkChange() => _exclusive('network', () async {
+    final active = _active;
+    if (_stopping || active == null || _status.phase != Phase.connected) {
+      return;
+    }
+    final token = _token;
+
+    if (!_networkAvailable) {
+      // Nothing to do but say so: the next change, when a network is back,
+      // does the work.
+      _log('network: none left');
+      _setLostContact(true);
+      return;
+    }
+
+    final since = _now();
+    _log('network: changed, asking the tunnel to find the server again');
+    try {
+      await tunnel.rebind(active.slot);
+    } on Object catch (e) {
+      _log('network: the tunnel could not be nudged: $e');
+    }
+
+    try {
+      if (await _waitHandshakeAfter(
+        active.slot,
+        since,
+        networkAnswerWithin,
+        token,
+      )) {
+        _log('network: the server answered on the new path');
+        _setLostContact(false);
+        return;
+      }
+      // The nudge was not enough: do what a person would, and bring the tunnel up
+      // again. The old one stays until the new one works.
+      _log(
+        'network: no answer in ${networkAnswerWithin.inSeconds} s, '
+        'bringing the tunnel up again',
+      );
+      _setLostContact(true);
+      final next = await _bringUp(active.body, previous: active, token: token);
+      _active = next;
+      _emit(
+        AppStatus(Phase.connected, region: next.body.region, since: next.since),
+      );
+    } on Cancelled {
+      _log('network: cancelled');
+    } catch (e) {
+      // The old tunnel is still there. The next change of network, or the health
+      // check, tries again.
+      _log('network: could not bring the tunnel up again: $e');
+    }
+  });
+
+  void _setLostContact(bool lost) {
+    final s = _status;
+    if (s.phase != Phase.connected || s.lostContact == lost) {
+      return;
+    }
+    _emit(
+      AppStatus(
+        s.phase,
+        region: s.region,
+        since: s.since,
+        lostContact: lost,
+        note: s.note,
+      ),
+    );
+  }
+
+  /// Waits for a handshake made at or after [since]. The library reports whole
+  /// seconds, so one from the second before counts too.
+  Future<bool> _waitHandshakeAfter(
+    String slot,
+    DateTime since,
+    Duration within,
+    CancelToken token,
+  ) async {
+    final deadline = _now().add(within);
+    while (true) {
+      token.check();
+      final hs = await tunnel.latestHandshake(slot);
+      if (hs != null && hs.add(const Duration(seconds: 1)).isAfter(since)) {
+        return true;
+      }
+      if (!_now().isBefore(deadline)) {
+        return false;
+      }
+      await token.guard(_sleep(const Duration(milliseconds: 300)));
     }
   }
 
