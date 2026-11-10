@@ -14,6 +14,7 @@ import (
 
 	"awgrotator/internal/awg"
 	"awgrotator/internal/config"
+	"awgrotator/internal/enroll"
 	"awgrotator/internal/fleet"
 	"awgrotator/internal/proto"
 	"awgrotator/internal/store"
@@ -181,7 +182,14 @@ func registrationFor(st *store.State, body *fleet.ConfigBody) (*tunneltest.Regis
 // register registers the device and returns the address the server gave it.
 func (d *opDevice) register(ctx context.Context, reg *tunneltest.Registration) (netip.Prefix, error) {
 	addr, err := tunneltest.Register(ctx, *reg, tunneltest.Device{ID: d.ID, Keypair: d.Keys, Name: d.Name})
-	if err != nil {
+	var refused *enroll.Refused
+	switch {
+	case errors.As(err, &refused) && refused.Reason == proto.EnrollPending:
+		code := proto.ApprovalCode(d.Keys.Public[:])
+		return netip.Prefix{}, fmt.Errorf("устройство «%s» ждёт одобрения: одобри его в боте (код %s) и повтори", d.Name, code)
+	case errors.As(err, &refused) && refused.Reason == proto.EnrollDenied:
+		return netip.Prefix{}, fmt.Errorf("устройству «%s» отказано: выдай доступ в боте (Заявки → Выдать доступ) и повтори", d.Name)
+	case err != nil:
 		return netip.Prefix{}, err
 	}
 	prefix, err := netip.ParsePrefix(addr)

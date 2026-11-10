@@ -54,6 +54,7 @@ func main() {
 		"status":        cmdStatus,
 		"trust":         cmdTrust,
 		"mirror":        cmdMirror,
+		"telegram":      cmdTelegram,
 		"export-backup": cmdExportBackup,
 	}
 	fn, ok := cmds[os.Args[1]]
@@ -78,13 +79,15 @@ func usage() {
   ru-update       скачать российские сети из RIPE
   ru-check        проверить сайты по набору российских сетей
   split-check     проверить правила nft на сервере (без применения)
-  update          обновить узел и менеджер на текущем сервере (-files — и списки)
+  update          обновить узел и менеджер на текущем сервере (-files — и списки,
+                  -approval on|off — новые устройства ждут одобрения в боте)
   command         приказать серверу: move | move-region <регион> | status | revoke <N>
   events          показать, что сервер сообщает о себе
   watch           журнал доступности с сервера: терял ли он связь с Россией и когда (-since, -raw)
   release         объявить новую версию приложений: publish | show
   mirror          второе место (GitLab) для установщиков и файлов конфигурации:
                   set gitlab -project владелец/имя | token | sync | show
+  telegram        бот для управления: link (добавить владельца) | unlink -id N | show
   sync            узнать, какой сервер сейчас текущий (после самостоятельного переезда)
   gc              найти и удалить лишние серверы, которые никому не нужны
   auto            включить или выключить самостоятельные переезды (-age, -block)

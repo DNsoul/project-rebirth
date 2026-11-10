@@ -15,6 +15,10 @@ const (
 	VultrKeyName  = "VULTR_API_KEY"
 	GitHubKeyName = "GITHUB_TOKEN"
 	GitLabKeyName = "GITLAB_TOKEN"
+
+	// TelegramKeyName is the operator's bot. Optional: without it there is no
+	// bot, and devices cannot be made to wait for approval.
+	TelegramKeyName = "TELEGRAM_BOT_TOKEN"
 )
 
 // Secrets are the credentials the operator supplies. The first two are needed
@@ -24,6 +28,8 @@ type Secrets struct {
 	VultrAPIKey string
 	GitHubToken string
 	GitLabToken string // optional: needed only to upload to a GitLab mirror
+
+	TelegramToken string // optional: the operator's bot
 }
 
 // Root returns the project root. It honours AWGCTL_DIR, otherwise it walks up
@@ -81,6 +87,8 @@ func LoadSecrets(root string) (Secrets, error) {
 		VultrAPIKey: pick(os.Getenv(VultrKeyName), values[VultrKeyName]),
 		GitHubToken: pick(os.Getenv(GitHubKeyName), values[GitHubKeyName]),
 		GitLabToken: pick(os.Getenv(GitLabKeyName), values[GitLabKeyName]),
+
+		TelegramToken: pick(os.Getenv(TelegramKeyName), values[TelegramKeyName]),
 	}
 	var missing []string
 	if s.VultrAPIKey == "" {

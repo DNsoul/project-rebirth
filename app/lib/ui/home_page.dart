@@ -129,6 +129,15 @@ class _Problem extends StatelessWidget {
         Severity.error,
       );
     }
+    // Waiting for the owner is the one thing said while connecting: the person
+    // has to read the digits out to them.
+    if (status.phase == Phase.connecting && status.approvalCode.isNotEmpty) {
+      return Notice(
+        'Ждём одобрения владельца. Код для сверки: ${status.approvalCode}. '
+        'Назовите его владельцу; нажатие на кнопку отменит ожидание.',
+        Severity.warning,
+      );
+    }
     if (update != null &&
         update.phase == UpdatePhase.failed &&
         update.message.isNotEmpty) {

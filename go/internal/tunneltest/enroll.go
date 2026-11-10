@@ -2,7 +2,6 @@ package tunneltest
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"net/netip"
 	"time"
@@ -33,6 +32,12 @@ type Registration struct {
 
 	// ContentKey seals the messages.
 	ContentKey []byte
+
+	// SelfTest is the key the check registers its device with. On a server that
+	// asks the operator before letting devices in, it is the server's
+	// preapproved key, the one way past the queue. Nil means a fresh key every
+	// time, which is all a server that does not ask needs.
+	SelfTest *awg.Keypair
 
 	// Probe is an address the enrollment peer must not be able to reach: the
 	// check opens a connection to it through the enrollment peer and fails if it
@@ -85,13 +90,9 @@ func Register(ctx context.Context, r Registration, d Device) (string, error) {
 	})
 }
 
-// SelfTestDeviceID is the identity a server's check registers under. It is the
-// same every time, so every check replaces the previous one's entry and a
-// server that is tested often still holds exactly one.
-func SelfTestDeviceID() []byte {
-	sum := sha256.Sum256([]byte("awg-rotator/selftest/v1"))
-	return sum[:16]
-}
+// SelfTestDeviceID is the identity a server's check registers under; see
+// enroll.SelfTestDeviceID.
+func SelfTestDeviceID() []byte { return enroll.SelfTestDeviceID() }
 
 // checkEnrollmentIsContained proves that the key every device is given for
 // registering cannot be used for anything else.
@@ -157,9 +158,15 @@ func checkRegistration(ctx context.Context, t Target) Check {
 		return Check{Name: name, Required: true, Detail: fmt.Sprintf(format, args...)}
 	}
 
-	kp, err := awg.GenerateKeypair()
-	if err != nil {
-		return fail("%v", err)
+	var kp awg.Keypair
+	if t.Registration.SelfTest != nil {
+		kp = *t.Registration.SelfTest
+	} else {
+		fresh, err := awg.GenerateKeypair()
+		if err != nil {
+			return fail("%v", err)
+		}
+		kp = fresh
 	}
 	addr, err := Register(ctx, *t.Registration, Device{ID: SelfTestDeviceID(), Keypair: kp, Name: "selftest"})
 	if err != nil {

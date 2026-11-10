@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"awgrotator/internal/awg"
+	"awgrotator/internal/enroll"
 	"awgrotator/internal/node"
 	"awgrotator/internal/proto"
 )
@@ -25,6 +26,11 @@ type Generation struct {
 	Enroll awg.Keypair // the enrollment peer, published to every device
 	Health awg.Keypair // the test peer; its private half stays with whoever tests
 
+	// SelfTest is the key the check before publication registers a device
+	// with. The server lets it in without the operator, so its private half
+	// stays with whoever tests, like Health's.
+	SelfTest awg.Keypair
+
 	Params awg.Params
 	Port   int
 
@@ -44,6 +50,9 @@ type GenOptions struct {
 	// Params overrides the generated obfuscation parameters. It exists for
 	// experiments; deployments leave it nil.
 	Params *awg.Params
+
+	// Approval makes new devices wait for the operator on the new server.
+	Approval bool
 }
 
 // NewGeneration makes a fresh set of keys and parameters.
@@ -51,7 +60,7 @@ func NewGeneration(opts GenOptions) (*Generation, error) {
 	g := &Generation{}
 	var err error
 
-	for _, kp := range []*awg.Keypair{&g.Server, &g.Enroll, &g.Health} {
+	for _, kp := range []*awg.Keypair{&g.Server, &g.Enroll, &g.Health, &g.SelfTest} {
 		if *kp, err = awg.GenerateKeypair(); err != nil {
 			return nil, err
 		}
@@ -87,6 +96,8 @@ func NewGeneration(opts GenOptions) (*Generation, error) {
 			Listen:      node.DefaultEnrollListen,
 			PeerAddress: node.DefaultEnrollPeerAddress,
 			ContentKey:  proto.Encode(opts.ContentKey),
+			Approval:    opts.Approval,
+			Preapproved: []string{enroll.KeyString(g.SelfTest.Public)},
 		}
 	}
 	if opts.Split {

@@ -1151,6 +1151,126 @@ void main() {
     );
   });
 
+  group('when the owner approves devices', () {
+    late StreamController<bool> net;
+
+    Future<void> settle() async {
+      for (var i = 0; i < 400; i++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+    }
+
+    setUp(() async {
+      net = StreamController<bool>.broadcast();
+      rig = await Rig.create(networkChanges: net.stream);
+      sto = rig.fleet.add('203.0.113.9:41820', 11, region: 'sto');
+      await rig.publish(sto);
+    });
+
+    tearDown(() => net.close());
+
+    test('a new device waits, shows the code to match, and connects once the '
+        'owner says yes', () async {
+      sto.asksOwner = true;
+      sto.onWaiting = (id) {
+        if (sto.waiting[id]! >= 3) sto.approve(id);
+      };
+      final said = <String>[];
+      final codes = <String>[];
+      final sub = rig.controller.statusStream.listen((s) {
+        said.add(s.message);
+        codes.add(s.approvalCode);
+      });
+
+      await rig.controller.connect();
+      await sub.cancel();
+
+      expect(rig.status.phase, Phase.connected, reason: rig.status.message);
+      expect(sto.waiting.values.single, 3, reason: 'it asked until approved');
+      expect(codes.where((c) => c.isNotEmpty), isNotEmpty);
+      expect(rig.status.approvalCode, isEmpty, reason: 'the wait is over');
+      expect(
+        said.where((m) => m.contains('Ждём одобрения владельца')),
+        isNotEmpty,
+      );
+      final shown = said.lastWhere((m) => m.contains('Код для сверки'));
+      expect(shown, matches(RegExp(r'Код для сверки: \d{4}$')));
+      expect(rig.tunnels, [
+        'awgr-a',
+      ], reason: 'the registration tunnel is gone');
+    });
+
+    test('the code shown is the one the server shows the owner', () async {
+      sto.asksOwner = true;
+      sto.onWaiting = (id) {
+        if (sto.waiting[id]! >= 2) sto.approve(id);
+      };
+      final said = <String>[];
+      final sub = rig.controller.statusStream.listen(
+        (s) => said.add(s.message),
+      );
+      await rig.controller.connect();
+      await sub.cancel();
+
+      final pub = sto.devices.keys.single;
+      final code = await approvalCode(decodeStd(pub, 32));
+      expect(said, contains(endsWith('Код для сверки: $code')));
+    });
+
+    test('waiting can be called off, and nothing is left behind', () async {
+      sto.asksOwner = true;
+      sto.onWaiting = (id) {
+        if (sto.waiting[id]! >= 2) unawaited(rig.controller.cancel());
+      };
+      await rig.controller.connect();
+      expect(rig.status.phase, Phase.idle);
+      expect(rig.tunnels, isEmpty);
+      expect(rig.dns.enabledFor, isNull);
+    });
+
+    test(
+      'a device the owner refused is told so, and nothing is left behind',
+      () async {
+        sto.asksOwner = true;
+        sto.onWaiting = sto.revoke;
+        await rig.controller.connect();
+        expect(rig.status.phase, Phase.failed);
+        expect(rig.status.message, contains('закрыл доступ'));
+        expect(rig.tunnels, isEmpty);
+      },
+    );
+
+    test('a device cut off while connected stops and says why, instead of '
+        'trying again and again', () async {
+      await rig.controller.connect();
+      expect(rig.status.phase, Phase.connected);
+      sto.revoke(sto.devices.values.single.id);
+
+      net.add(true);
+      await settle();
+
+      expect(rig.status.phase, Phase.failed, reason: rig.status.message);
+      expect(rig.status.message, contains('закрыл доступ'));
+      expect(rig.tunnels, isEmpty);
+      expect(rig.dns.enabledFor, isNull);
+    });
+
+    test('a new server that wants the owner to approve this device does not '
+        'take the working connection away', () async {
+      await rig.controller.connect();
+      final waw = rig.fleet.add('198.51.100.7:41820', 22, region: 'waw')
+        ..asksOwner = true;
+      await rig.publish(waw);
+
+      await rig.controller.pollNow();
+
+      expect(rig.status.phase, Phase.connected);
+      expect(rig.status.region, 'sto', reason: 'stays on the old server');
+      expect(rig.tunnels, ['awgr-a']);
+      expect(waw.waiting, isNotEmpty);
+    });
+  });
+
   // The app has to answer a press at once, say what it is doing, and let go of a
   // slow step the moment the person changes their mind. These stop the app
   // halfway through (at the tunnel, at the web request) and press something.

@@ -360,6 +360,39 @@ void main() {
       },
     );
 
+    testWidgets(
+      'waiting for the owner shows the code to read out, and only then',
+      (tester) async {
+        windowOf(tester, window);
+        await tester.pumpWidget(
+          app(
+            StaticView(
+              const AppStatus(
+                Phase.connecting,
+                message: 'Ждём одобрения владельца. Код для сверки: 3045',
+                step: ConnectStep.server,
+                approvalCode: '3045',
+              ),
+            ),
+          ),
+        );
+        expect(find.textContaining('Ждём одобрения владельца'), findsOneWidget);
+        expect(find.textContaining('3045'), findsOneWidget);
+
+        // The same code left on a status that is no longer connecting says
+        // nothing: the wait is over.
+        await tester.pumpWidget(
+          app(
+            StaticView(
+              AppStatus(Phase.connected, region: 'sto', approvalCode: '3045'),
+            ),
+          ),
+        );
+        expect(find.textContaining('3045'), findsNothing);
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+
     testWidgets('a move that did not work out is said, but the tunnel stays on', (
       tester,
     ) async {

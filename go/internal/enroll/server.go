@@ -39,6 +39,17 @@ type Server struct {
 	// address. Everything else is ignored without a reply.
 	From netip.Addr
 
+	// Access holds the waiting list and the refusals. Without it nobody is
+	// refused and nothing waits. With it, refused devices are always turned
+	// away, and with Approval set a device the operator has not approved waits.
+	Access   *Access
+	Approval bool
+
+	// Preapproved are keys accepted without the operator, base64url: the key
+	// the replacing server's own check registers with. It is secret and made
+	// afresh for every server, which is what lets it skip the queue.
+	Preapproved []string
+
 	Log *slog.Logger
 	Now func() time.Time
 
@@ -87,43 +98,74 @@ func (s *Server) Handle(from netip.Addr, datagram []byte) []byte {
 		return s.reply(proto.NewEnrollRefused(req.Nonce, proto.EnrollBusy, now))
 	}
 
-	plan, refusal := s.Registry.Plan(req, now)
-	if refusal != "" {
-		s.log().Info("refused a device", "reason", refusal, "name", req.Name)
-		return s.reply(proto.NewEnrollRefused(req.Nonce, refusal, now))
+	if reason := s.gate(req, now); reason != "" {
+		return s.reply(proto.NewEnrollRefused(req.Nonce, reason, now))
 	}
 
-	// The tunnel first, the record second. A device the tunnel accepts but the
-	// record does not know is forgotten at the next restart and enrols again;
-	// the other way round it would be told it is registered and fail.
-	pub, err := ParseKey(plan.Device.PublicKey)
-	if err != nil {
-		return s.reply(proto.NewEnrollRefused(req.Nonce, proto.EnrollBadRequest, now))
-	}
-	if err := s.Peers.SetPeer(pub, plan.Device.Address); err != nil {
-		s.log().Error("could not add the device to the tunnel", "error", err)
+	_, known := s.Registry.Lookup(req.DeviceID)
+	d, err := s.admit(req.DeviceID, req.PublicKey, req.Name, now)
+	var refused *RefusedError
+	switch {
+	case errors.As(err, &refused):
+		s.log().Info("refused a device", "reason", refused.Reason, "name", req.Name)
+		return s.reply(proto.NewEnrollRefused(req.Nonce, refused.Reason, now))
+	case err != nil:
+		s.log().Error("could not register a device", "error", err)
 		return s.reply(proto.NewEnrollRefused(req.Nonce, proto.EnrollBusy, now))
-	}
-	if err := s.Registry.Commit(plan); err != nil {
-		s.log().Error("could not save the device list", "error", err)
-		if !plan.Existing {
-			_ = s.Peers.RemovePeer(pub)
-		}
-		return s.reply(proto.NewEnrollRefused(req.Nonce, proto.EnrollBusy, now))
-	}
-	for _, old := range plan.Drop {
-		k, err := ParseKey(old)
-		if err != nil {
-			continue
-		}
-		if err := s.Peers.RemovePeer(k); err != nil {
-			s.log().Warn("could not remove a replaced key from the tunnel", "error", err)
-		}
 	}
 
-	s.log().Info("enrolled a device", "name", plan.Device.Name, "address", plan.Device.Address,
-		"known", plan.Existing, "devices", s.Registry.Len())
-	return s.reply(proto.NewEnrolled(req, plan.Device.Address, now))
+	s.log().Info("enrolled a device", "name", d.Name, "address", d.Address,
+		"known", known, "devices", s.Registry.Len())
+	return s.reply(proto.NewEnrolled(req, d.Address, now))
+}
+
+// gate decides whether a request may go on to be registered. An empty answer
+// lets it through; anything else is the reason to send back.
+//
+// A device approved under the same key, or a preapproved key, goes through as
+// before. A refused device, or a refused key, is turned away. On a server that
+// asks the operator, everything else waits: a new device, and an approved one
+// that comes with a different key, since that is either a reinstalled app or
+// somebody claiming to be that device, and only the operator can tell which.
+func (s *Server) gate(req *proto.EnrollRequest, now time.Time) string {
+	if s.Access == nil || s.preapproved(req.PublicKey) {
+		return ""
+	}
+	// Refusals first: a refusal that somehow sits next to an approval must
+	// still win, or a device that was cut off could carry on with its old key.
+	if s.Access.Refused(req) {
+		s.log().Info("turned away a refused device", "name", req.Name)
+		return proto.EnrollDenied
+	}
+	known, ok := s.Registry.Lookup(req.DeviceID)
+	if ok && known.PublicKey == req.PublicKey {
+		return ""
+	}
+	if !s.Approval {
+		return ""
+	}
+	r, fresh, err := s.Access.Ask(req, ok, now)
+	switch {
+	case errors.Is(err, ErrQueueFull):
+		s.log().Warn("the waiting list is full; a request was not taken", "name", req.Name)
+		return proto.EnrollBusy
+	case err != nil:
+		s.log().Error("could not save the waiting list", "error", err)
+		return proto.EnrollBusy
+	}
+	if fresh {
+		s.log().Info("a device is waiting for approval", "name", r.Name, "key_change", r.KeyChange)
+	}
+	return proto.EnrollPending
+}
+
+func (s *Server) preapproved(pub string) bool {
+	for _, k := range s.Preapproved {
+		if k == pub {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) reply(r *proto.EnrollResponse) []byte {

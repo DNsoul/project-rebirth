@@ -10,6 +10,7 @@ import 'app.dart';
 import 'core/app_state.dart';
 import 'core/bootstrap.dart';
 import 'core/controller.dart';
+import 'core/device_label.dart';
 import 'core/dns_probe.dart';
 import 'core/gist_source.dart';
 import 'core/http_downloader.dart';
@@ -91,7 +92,8 @@ Future<void> runWindows(List<String> args) async {
     probe: UdpDnsProbe(),
     machine: WindowsMachineId(),
     transportFactory: () => UdpEnrollTransport(log: log),
-    deviceName: 'windows',
+    // What the owner sees next to this computer's request to come in.
+    deviceName: deviceLabel(_computerName(), fallback: 'Windows'),
     log: log,
   );
 
@@ -169,5 +171,15 @@ Future<void> runWindows(List<String> args) async {
   if (leaveAfter != null) {
     log('will quit by itself in ${leaveAfter.inSeconds}s');
     Timer(leaveAfter, () => unawaited(quit()));
+  }
+}
+
+/// The computer's name, as Windows shows it. An empty answer is replaced by
+/// the caller.
+String _computerName() {
+  try {
+    return Platform.localHostname;
+  } on Object {
+    return '';
   }
 }

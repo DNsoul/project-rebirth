@@ -119,6 +119,7 @@
     "reply_plain": "{\"v\":1,\"kind\":\"enrolled\",\"nonce\":\"CQkJCQkJCQkJCQkJCQkJCQ\",\"address\":\"10.8.0.7/32\",\"iat\":1762400000}",
     "reply_blob": "BQUFBQUFBQUFBQUFvhsHy5PWhla_vmfumOhgUh6nAgcKHIPUrB-o6T0I_oFpp9Dscb0du4UKlNFIg8t6d-qjK9jfann3zk3pqFiHiNMsHg7Z-M2OXDq_BXrS4BpI0cU36LBvV1FIVTfRMlB1Bhd-k9N4qCzrrKqvp9mptX9leA",
     "refused_plain": "{\"v\":1,\"kind\":\"enrolled\",\"nonce\":\"CQkJCQkJCQkJCQkJCQkJCQ\",\"error\":\"full\",\"iat\":1762400000}",
-    "refused_blob": "BQUFBQUFBQUFBQUFvhsHy5PWhla_vmfumOhgUh6nAgcKHIPUrB-o6T0I_oFpp9Dscb0du4UKlNFIg8t6d-qjK9jfann3zk3tvk6an4JlHlKOpZGCSDbmSjnf6Rldy9VqufR9XVACQTVjUeP5RZLmFcA-R4rxPw"
+    "refused_blob": "BQUFBQUFBQUFBQUFvhsHy5PWhla_vmfumOhgUh6nAgcKHIPUrB-o6T0I_oFpp9Dscb0du4UKlNFIg8t6d-qjK9jfann3zk3tvk6an4JlHlKOpZGCSDbmSjnf6Rldy9VqufR9XVACQTVjUeP5RZLmFcA-R4rxPw",
+    "approval_code": "3045"
   }
 }

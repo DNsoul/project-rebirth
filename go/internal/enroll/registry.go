@@ -209,6 +209,48 @@ func (r *Registry) Devices() []Device {
 	return append([]Device(nil), r.devices...)
 }
 
+// Lookup returns the device with this id.
+func (r *Registry) Lookup(id string) (Device, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, d := range r.devices {
+		if d.ID == id {
+			return d, true
+		}
+	}
+	return Device{}, false
+}
+
+// Remove takes a device off the list and saves. If saving fails nothing has
+// changed.
+func (r *Registry) Remove(id string) (Device, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	before := r.devices
+	next := make([]Device, 0, len(r.devices))
+	var gone *Device
+	for i := range r.devices {
+		if r.devices[i].ID == id {
+			d := r.devices[i]
+			gone = &d
+			continue
+		}
+		next = append(next, r.devices[i])
+	}
+	if gone == nil {
+		return Device{}, ErrUnknownDevice
+	}
+	r.devices = next
+	if err := r.saveLocked(); err != nil {
+		r.devices = before
+		return Device{}, err
+	}
+	return *gone, nil
+}
+
+// ErrUnknownDevice is returned for an id the list does not have.
+var ErrUnknownDevice = errors.New("no such device")
+
 // Len is how many devices are registered.
 func (r *Registry) Len() int {
 	r.mu.Lock()

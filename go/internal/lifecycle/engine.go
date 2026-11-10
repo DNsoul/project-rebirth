@@ -77,6 +77,10 @@ type Host interface {
 	// there is none yet.
 	ReadRegistry() ([]byte, error)
 
+	// ReadAccess returns the node's waiting list and refusals, or nil if there
+	// are none yet.
+	ReadAccess() ([]byte, error)
+
 	// ReadWatchLog returns the end of the availability log, or nil if there is
 	// none, for a replacement to carry on from.
 	ReadWatchLog() ([]byte, error)
@@ -200,7 +204,7 @@ func (e *Engine) Move(ctx context.Context, req MoveRequest) (*MoveResult, error)
 	if err != nil {
 		return fail(fmt.Errorf("content key: %w", err))
 	}
-	gen, err := fleet.NewGeneration(fleet.GenOptions{Split: true, ContentKey: contentKey})
+	gen, err := fleet.NewGeneration(fleet.GenOptions{Split: true, ContentKey: contentKey, Approval: e.Cfg.Approval()})
 	if err != nil {
 		return fail(err)
 	}
@@ -381,6 +385,9 @@ func (e *Engine) testTarget(gen *fleet.Generation, ip string, contentKey []byte)
 			PeerPrivate:  gen.Enroll.Private,
 			PeerAddr:     netip.MustParseAddr(node.DefaultEnrollPeerAddress),
 			ContentKey:   contentKey,
+			// The new server's preapproved key: on a server that asks the
+			// operator, any other key would only be told to wait.
+			SelfTest: &gen.SelfTest,
 		},
 	}, nil
 }
@@ -441,7 +448,34 @@ func (e *Engine) successorFiles(inst *vultr.Instance, region string, body *fleet
 			What: "список устройств", Path: enroll.DefaultRegistryPath, Mode: "0600", Content: devices,
 		})
 	}
+	if access := e.inheritedAccess(); len(access) > 0 {
+		files = append(files, deploy.File{
+			What: "заявки и отказы", Path: enroll.DefaultAccessPath, Mode: "0600", Content: access,
+		})
+	}
 	return files, nil
+}
+
+// inheritedAccess is the waiting list and the refusals, handed on so that a
+// refused device stays refused after the move and the operator is not asked
+// about the same request twice. A list that cannot be read or does not check
+// out is left behind: requests are asked again, while a refused device would
+// have to be refused again, which is the lesser loss than a server that will
+// not start.
+func (e *Engine) inheritedAccess() []byte {
+	raw, err := e.Host.ReadAccess()
+	if err != nil {
+		e.log().Warn("could not read the waiting list; the new server starts with none", "error", err)
+		return nil
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	if _, _, err := enroll.ParseAccess(raw); err != nil {
+		e.log().Warn("the waiting list does not check out; the new server starts with none", "error", err)
+		return nil
+	}
+	return raw
 }
 
 // inheritedDevices is the list of registered devices, handed to the replacement

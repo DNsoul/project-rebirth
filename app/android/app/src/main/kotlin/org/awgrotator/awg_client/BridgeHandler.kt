@@ -2,6 +2,7 @@ package org.awgrotator.awg_client
 
 import android.content.Context
 import android.net.VpnService
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -84,6 +85,18 @@ class BridgeHandler(
 
             "androidId" ->
                 result.success(Settings.Secure.getString(app.contentResolver, Settings.Secure.ANDROID_ID))
+
+            // What the owner sees next to a request to come in. Many makers
+            // repeat their name in the model ("Xiaomi" + "Xiaomi 13"), so it is
+            // given once.
+            "deviceModel" -> {
+                val maker = Build.MANUFACTURER.orEmpty().trim()
+                val model = Build.MODEL.orEmpty().trim()
+                result.success(
+                    if (maker.isEmpty() || model.startsWith(maker, ignoreCase = true)) model
+                    else "$maker $model",
+                )
+            }
 
             "filesDir" -> result.success(app.filesDir.absolutePath)
 

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/big"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"awgrotator/internal/fleet"
@@ -102,6 +103,24 @@ type Manager struct {
 	Now   func() time.Time
 	Log   *slog.Logger
 
+	// OnEvent is told what the operator should hear about without asking: a
+	// move starting, failing or handing over, this server taking over, the
+	// health verdict changing. It is called on the manager's goroutine and
+	// must not block.
+	OnEvent func(Event)
+
+	// ConfigPath is where the configuration is saved when the operator changes
+	// it through the bot. Empty means the change lasts until a restart.
+	ConfigPath string
+
+	actions          chan Action
+	snap             *atomic.Pointer[Snapshot]
+	moving           bool
+	current          bool
+	currentKnown     bool
+	lastCurrentCheck time.Time
+	lastVerdict      Verdict
+
 	tracker      *Tracker
 	lastLocal    time.Time
 	lastExternal time.Time
@@ -130,6 +149,8 @@ func NewManager(m Manager) *Manager {
 	m.Every = m.Every.withDefaults()
 	m.tracker = NewTracker(m.Cfg.Policy.BlockRounds)
 	m.why = "starting up"
+	m.actions = make(chan Action, 8)
+	m.snap = new(atomic.Pointer[Snapshot])
 	return &m
 }
 
@@ -191,6 +212,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	if err := m.Eng.Resume(ctx); err != nil {
 		m.log().Warn("could not settle an unfinished move at start-up; will retry", "error", err)
 	}
+	m.publishSnapshot(ctx)
 	return nil
 }
 
@@ -210,6 +232,12 @@ func drawJitter(hours int) (time.Duration, error) {
 // to call often.
 func (m *Manager) Tick(ctx context.Context) error {
 	now := m.now()
+	// Whatever way the pass ends, the bot gets to see how things stand.
+	defer func() {
+		m.checkCurrent(ctx, m.now())
+		m.noteHealth()
+		m.publishSnapshot(ctx)
+	}()
 
 	m.pollInbox(ctx, now)
 
@@ -426,15 +454,25 @@ func (m *Manager) maybeMove(ctx context.Context, now time.Time) error {
 
 	m.log().Info("moving", "trigger", decision.Request.Trigger, "why", decision.Reason)
 	m.pending = nil
+	m.moving = true
+	m.publishSnapshot(ctx)
+	m.emit(Event{Kind: EventMoveStarted, Trigger: decision.Request.Trigger, Why: decision.Reason, Region: decision.Request.Region})
 	res, err := m.Eng.Move(ctx, decision.Request)
+	m.moving = false
 	if err != nil {
 		m.statusDue = true
 		// A failed move leaves this server running. The failure is in the
 		// journal and goes into the next status; Tick does not fail on it,
 		// or the process would be restarted into trying again at once.
 		m.log().Error("the move did not succeed; this server stays", "error", err)
+		m.emit(Event{Kind: EventMoveFailed, Trigger: decision.Request.Trigger, Err: err.Error()})
 		return nil
 	}
+	// Handed over: from now on the replacement answers the operator. Told
+	// before the grace period is waited out, which takes a while.
+	m.current = false
+	m.publishSnapshot(ctx)
+	m.emit(Event{Kind: EventMovePublished, Trigger: decision.Request.Trigger, Region: res.Region})
 	return m.Eng.Retire(ctx, res.AttemptID)
 }
 

@@ -180,6 +180,9 @@ class FakeBridge implements VpnBridge {
 
   @override
   Future<String> filesDir() async => '/data/test';
+
+  @override
+  Future<String> deviceModel() async => 'Xiaomi Redmi Note 12';
 }
 
 const mainConf =

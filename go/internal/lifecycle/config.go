@@ -155,6 +155,10 @@ type Config struct {
 	// and not behind it. Without it only the gist is used.
 	GitLab *GitLabSync `json:"gitlab,omitempty"`
 
+	// Telegram is the operator's bot. The server that is published runs it;
+	// every replacement inherits it.
+	Telegram *TelegramConfig `json:"telegram,omitempty"`
+
 	// ServerSeed is the key this line of servers signs with, and Cert is the
 	// certificate the operator's root key issued for it. A server cannot make
 	// its own certificate, so every replacement inherits this one.
@@ -193,6 +197,36 @@ type GitLabSync struct {
 	Package string `json:"package"`
 	Token   string `json:"token"`
 }
+
+// TelegramConfig is the operator's bot: its token, and who it answers. Anyone
+// else gets no answer at all.
+type TelegramConfig struct {
+	Token  string  `json:"token"`
+	Owners []int64 `json:"owners"`
+
+	// Approval makes new devices wait for the operator, on this server's
+	// replacements as on this one. It lives here because without the bot
+	// nobody could approve anything.
+	Approval bool `json:"approval,omitempty"`
+}
+
+func (t *TelegramConfig) validate() error {
+	switch {
+	case t.Token == "":
+		return errors.New("telegram: no bot token")
+	case len(t.Owners) == 0:
+		return errors.New("telegram: nobody to answer")
+	}
+	for _, id := range t.Owners {
+		if id <= 0 {
+			return fmt.Errorf("telegram: %d is not a person's id", id)
+		}
+	}
+	return nil
+}
+
+// Approval reports whether new devices wait for the operator.
+func (c *Config) Approval() bool { return c.Telegram != nil && c.Telegram.Approval }
 
 func (g *GitLabSync) validate() error {
 	switch {
@@ -251,6 +285,11 @@ func (c *Config) Validate() error {
 	}
 	if c.GitLab != nil {
 		if err := c.GitLab.validate(); err != nil {
+			return err
+		}
+	}
+	if c.Telegram != nil {
+		if err := c.Telegram.validate(); err != nil {
 			return err
 		}
 	}

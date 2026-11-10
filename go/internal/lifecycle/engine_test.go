@@ -756,6 +756,67 @@ func TestADeviceListThatDoesNotCheckOutIsNotPassedOn(t *testing.T) {
 	}
 }
 
+// A refused device must stay refused after a move, and a request the operator
+// was already told about must not be told about again.
+func TestTheSuccessorInheritsTheWaitingListAndTheRefusals(t *testing.T) {
+	r := newRig(t)
+	id := proto.Encode(bytes.Repeat([]byte{1}, proto.DeviceIDSize))
+	key := proto.Encode(bytes.Repeat([]byte{0x41}, proto.TunnelKeySize))
+	r.host.access = []byte(`{"version":1,"pending":[],"denied":[{"id":"` + id + `","pub":"` + key + `","at":1}]}`)
+	mustMove(t, r, MoveRequest{Trigger: TriggerCommand})
+
+	got, ok := filesByPath(r)[enroll.DefaultAccessPath]
+	if !ok {
+		t.Fatalf("the waiting list was not passed on; files: %v", paths(r.prov.files))
+	}
+	if string(got) != string(r.host.access) {
+		t.Error("the successor was given a different list")
+	}
+	for _, f := range r.prov.files {
+		if f.Path == enroll.DefaultAccessPath && f.Mode != "0600" {
+			t.Errorf("the waiting list is written with mode %s", f.Mode)
+		}
+	}
+}
+
+func TestAWaitingListThatDoesNotCheckOutIsNotPassedOn(t *testing.T) {
+	r := newRig(t)
+	r.host.access = []byte(`{"version":9}`)
+	mustMove(t, r, MoveRequest{Trigger: TriggerCommand})
+	if _, ok := filesByPath(r)[enroll.DefaultAccessPath]; ok {
+		t.Error("a broken waiting list was passed on")
+	}
+}
+
+// On a line of servers that asks the operator, the new server asks too, and the
+// check before publication gets past the queue only with the key the new server
+// was told to let in.
+func TestTheNewServerAsksTheOperatorAndItsCheckHasTheWayIn(t *testing.T) {
+	r := newRig(t)
+	r.cfg.Telegram = &TelegramConfig{Token: "t", Owners: []int64{1}, Approval: true}
+	mustMove(t, r, MoveRequest{Trigger: TriggerCommand})
+
+	ec := r.prov.reqs[len(r.prov.reqs)-1].Node.Enroll
+	if ec == nil || !ec.Approval {
+		t.Fatalf("the new server does not ask the operator: %+v", ec)
+	}
+	reg := r.tester.target.Registration
+	if reg == nil || reg.SelfTest == nil {
+		t.Fatal("the check has no key of its own")
+	}
+	if len(ec.Preapproved) != 1 || ec.Preapproved[0] != enroll.KeyString(reg.SelfTest.Public) {
+		t.Fatalf("preapproved %v is not the check's key", ec.Preapproved)
+	}
+}
+
+func TestWithoutTheBotTheNewServerDoesNotAsk(t *testing.T) {
+	r := newRig(t)
+	mustMove(t, r, MoveRequest{Trigger: TriggerCommand})
+	if ec := r.prov.reqs[len(r.prov.reqs)-1].Node.Enroll; ec == nil || ec.Approval {
+		t.Fatalf("enroll = %+v, want registration without approval", ec)
+	}
+}
+
 // Without this a new server would have no way to take on a device.
 func TestTheNewServerIsSetUpAndPublishedForRegistration(t *testing.T) {
 	r := newRig(t)

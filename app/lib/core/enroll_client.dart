@@ -23,6 +23,10 @@ class EnrollRefused implements Exception {
         return 'Ключ этого устройства закреплён за другим. Сообщите тому, кто ведёт серверы.';
       case enrollBusy:
         return 'Сервер занят регистрацией других устройств. Повторите через минуту.';
+      case enrollPending:
+        return 'Это устройство ждёт одобрения владельца. Нажмите «Подключить», чтобы подождать.';
+      case enrollDenied:
+        return 'Владелец закрыл доступ к VPN для этого устройства.';
       default:
         return 'Сервер отказал в регистрации ($reason). Повторите позже.';
     }
@@ -35,7 +39,13 @@ class EnrollRefused implements Exception {
 /// The datagram is sent again every second until an answer comes: the first
 /// packets after a handshake can be lost, and a request that arrives twice does
 /// no harm. A "busy" answer is waited out with a short pause and a fresh request.
-/// Anything else the server says is final.
+///
+/// On a server that asks its operator first, the answer can be "pending". With
+/// [onPending] given, that is waited out too, for as long as it takes: the
+/// device asks again every [pendingEvery], [onPending] is told each time, and
+/// only cancelling stops it. Without [onPending], "pending" is final like any
+/// other refusal. [timeout] bounds the silence of a server that does not
+/// answer, not the wait for a decision.
 Future<String> registerDevice({
   required EnrollTransport transport,
   required Uint8List contentKey,
@@ -47,11 +57,13 @@ Future<String> registerDevice({
   Future<void> Function(Duration)? sleep,
   Random? random,
   CancelToken? cancel,
+  void Function()? onPending,
+  Duration pendingEvery = const Duration(seconds: 10),
 }) async {
   final clock = now ?? DateTime.now;
   final wait = sleep ?? (Duration d) => Future<void>.delayed(d);
   final rng = random ?? Random();
-  final deadline = clock().add(timeout);
+  var deadline = clock().add(timeout);
 
   while (true) {
     cancel?.check();
@@ -84,6 +96,14 @@ Future<String> registerDevice({
     }
 
     if (response.granted) return response.address;
+    if (response.error == enrollPending && onPending != null) {
+      onPending();
+      final pause = wait(pendingEvery);
+      await (cancel == null ? pause : cancel.guard(pause));
+      // The server answered; only its silence from here on counts.
+      deadline = clock().add(timeout);
+      continue;
+    }
     if (response.error != enrollBusy) throw EnrollRefused(response.error);
 
     if (!clock().isBefore(deadline)) throw EnrollRefused(enrollBusy);

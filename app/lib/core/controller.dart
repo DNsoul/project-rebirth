@@ -42,9 +42,14 @@ class AppStatus {
     this.lostContact = false,
     this.note = '',
     this.step,
+    this.approvalCode = '',
   });
 
   final Phase phase;
+
+  /// While connecting, set when the server waits for its owner to let this
+  /// device in: the four digits the owner sees next to the request.
+  final String approvalCode;
 
   /// While connecting, the furthest stage reached; after a failure, the one it
   /// failed at. It never goes back within one attempt. Null otherwise.
@@ -252,6 +257,26 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         lostContact: s.lostContact,
         note: s.note,
         step: reached,
+      ),
+    );
+  }
+
+  /// Says that the server waits for its owner, with the code to match. The next
+  /// step said clears it, which is how it goes away once the owner says yes.
+  void _waitingForOwner(String code) {
+    final s = _status;
+    if (s.phase != Phase.connecting) {
+      return;
+    }
+    _emit(
+      AppStatus(
+        s.phase,
+        message: 'Ждём одобрения владельца. Код для сверки: $code',
+        region: s.region,
+        since: s.since,
+        note: s.note,
+        step: s.step,
+        approvalCode: code,
       ),
     );
   }
@@ -506,6 +531,14 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         );
       }
     } catch (e) {
+      // Refused by the new server: the owner cut this device off, and the old
+      // server has the same refusal. A new server that only wants the owner's
+      // word is different: the old one still carries the traffic, so the app
+      // stays on it and asks again later, like for a server that does not answer.
+      if (e is EnrollRefused && e.reason == enrollDenied) {
+        await _endShutOut(e);
+        return;
+      }
       // The old server is still there and still carrying the traffic.
       _log('switch failed: $e');
       _retryNewServerAfter = _now().add(const Duration(minutes: 1));
@@ -661,11 +694,32 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     } on Cancelled {
       _log('network: cancelled');
     } catch (e) {
+      if (_shutOut(e)) {
+        await _endShutOut(e);
+        return;
+      }
       // The old tunnel is still there. The next change of network, or the health
       // check, tries again.
       _log('network: could not bring the tunnel up again: $e');
     }
   });
+
+  /// Whether the server has said this device may not come in: the owner closed
+  /// its access, or the server no longer knows it and wants the owner's word.
+  /// Trying again on its own would get the same answer.
+  bool _shutOut(Object e) =>
+      e is EnrollRefused &&
+      (e.reason == enrollDenied || e.reason == enrollPending);
+
+  /// Takes the tunnel down and says why. It runs inside the operation that
+  /// found out, so it does its own clearing up rather than queue another.
+  Future<void> _endShutOut(Object e) async {
+    _log('the server shut this device out: $e');
+    _stopTimers();
+    await _teardownQuietly();
+    _active = null;
+    _emit(AppStatus(Phase.failed, message: explain(e)));
+  }
 
   void _setLostContact(bool lost) {
     final s = _status;
@@ -1026,7 +1080,16 @@ class ConnectionController implements ConnectionView, ReleaseSource {
 
     if (address == null) {
       say('Регистрирую это устройство…');
-      final registered = await _register(body, identity, token, say);
+      // Only a connection the person is watching waits for the owner's approval:
+      // they see the code and can cancel. A move or a repair in the background
+      // that finds the device unknown gives up instead, and says why.
+      final registered = await _register(
+        body,
+        identity,
+        token,
+        say,
+        waitForApproval: previous == null,
+      );
       _log('registered on ${body.region} ${body.endpoint} as $registered');
       if (!await attempt(
         registered,
@@ -1107,8 +1170,9 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     ConfigBody body,
     _Identity identity,
     CancelToken token,
-    void Function(String, [ConnectStep?]) say,
-  ) async {
+    void Function(String, [ConnectStep?]) say, {
+    required bool waitForApproval,
+  }) async {
     final info = body.enroll;
     if (info == null) {
       throw ConnectException(
@@ -1143,6 +1207,10 @@ class ConnectionController implements ConnectionView, ReleaseSource {
       );
       _log('registration: tunnel up, handshake ${shook ? 'seen' : 'not seen'}');
       say('Регистрирую это устройство…', ConnectStep.server);
+      // The same four digits stand next to the request in the owner's chat,
+      // so the two can be matched over the phone.
+      final code = await approvalCode(identity.publicKey);
+      var told = false;
       return await registerDevice(
         transport: transport,
         contentKey: bootstrap.contentKey,
@@ -1152,6 +1220,15 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         now: _now,
         sleep: _sleep,
         cancel: token,
+        onPending: !waitForApproval
+            ? null
+            : () {
+                if (!told) {
+                  told = true;
+                  _log('registration: waiting for the owner, code $code');
+                }
+                _waitingForOwner(code);
+              },
       );
     } on TimeoutException {
       _log('registration timed out: ${transport.describe()}');

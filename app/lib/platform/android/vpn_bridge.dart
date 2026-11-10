@@ -49,6 +49,9 @@ abstract class VpnBridge {
   /// This device's Android ID: it survives reinstalling the app.
   Future<String> androidId();
 
+  /// What the phone calls itself: maker and model, e.g. "Xiaomi Redmi Note 12".
+  Future<String> deviceModel();
+
   /// The app's private folder for files.
   Future<String> filesDir();
 
@@ -144,4 +147,8 @@ class MethodChannelVpnBridge implements VpnBridge {
   @override
   Future<String> filesDir() async =>
       await _channel.invokeMethod<String>('filesDir') ?? '';
+
+  @override
+  Future<String> deviceModel() async =>
+      await _channel.invokeMethod<String>('deviceModel') ?? '';
 }

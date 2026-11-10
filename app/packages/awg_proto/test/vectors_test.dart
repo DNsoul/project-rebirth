@@ -432,6 +432,18 @@ void main() {
       expect(jsonEncode(refused.toJson()), e['refused_plain']);
     });
 
+    test('derives the same approval code Go does', () async {
+      expect(await approvalCode(decode(e['public_key']! as String)),
+          e['approval_code']);
+    });
+
+    test('approval codes are always four digits', () async {
+      for (var i = 0; i < 64; i++) {
+        final code = await approvalCode(List.filled(32, i));
+        expect(code, matches(RegExp(r'^\d{4}$')));
+      }
+    });
+
     test('a reply to another request is refused', () async {
       await expectLater(
         openEnrollResponse(

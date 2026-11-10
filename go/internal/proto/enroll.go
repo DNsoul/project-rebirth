@@ -3,6 +3,8 @@ package proto
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,7 +45,24 @@ const (
 	EnrollBusy       = "busy"       // too many requests just now; try again shortly
 	EnrollFull       = "full"       // the server holds as many devices as it will
 	EnrollKeyInUse   = "key_in_use" // that key already belongs to another device
+
+	// On a server where the operator approves devices: the request is waiting
+	// for a decision (ask again later), or the operator said no.
+	EnrollPending = "pending"
+	EnrollDenied  = "denied"
 )
+
+// ApprovalCode is four digits derived from a device's tunnel key. The app shows
+// it while it waits, and the operator sees it next to the request, so the two
+// can be matched over the phone. It is not a secret and proves nothing on its
+// own; it only tells one waiting device from another.
+func ApprovalCode(publicKey []byte) string {
+	h := sha256.New()
+	h.Write([]byte("awg-rotator/approval-code/v1"))
+	h.Write(publicKey)
+	sum := h.Sum(nil)
+	return fmt.Sprintf("%04d", binary.BigEndian.Uint32(sum[:4])%10000)
+}
 
 // EnrollRequest is what a device sends.
 type EnrollRequest struct {

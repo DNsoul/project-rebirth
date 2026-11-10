@@ -233,6 +233,30 @@ class FakeServer {
   /// When set, registration is refused with this reason.
   String? refuse;
 
+  /// When set, a device the server does not know under its key waits for the
+  /// owner: it is told "pending" until [approve] is called for its id.
+  bool asksOwner = false;
+
+  /// Device ids that have asked and are waiting, and how many times they asked.
+  final Map<String, int> waiting = {};
+
+  /// Device ids the owner refused or cut off.
+  final Set<String> denied = {};
+
+  /// Called when a device asks and is told to wait, so a test can decide then.
+  void Function(String deviceId)? onWaiting;
+
+  final Set<String> _approved = {};
+
+  void approve(String deviceId) => _approved.add(deviceId);
+
+  /// Cuts a device off, as the owner's "revoke" does: it leaves the server's
+  /// list, so its tunnel goes quiet, and it is refused if it asks again.
+  void revoke(String deviceId) {
+    devices.removeWhere((_, d) => d.id == deviceId);
+    denied.add(deviceId);
+  }
+
   /// The devices this server knows, by tunnel public key (standard base64):
   /// their identifier and the address on record.
   final Map<String, ({String id, String address})> devices = {};
@@ -261,6 +285,26 @@ class FakeServer {
       ).seal(contentKey);
     }
     final pubStd = encodeStd(decode(request.publicKey));
+    final iat = now.millisecondsSinceEpoch ~/ 1000;
+    if (denied.contains(request.deviceId)) {
+      return EnrollResponse(
+        nonce: request.nonce,
+        issuedAt: iat,
+        error: enrollDenied,
+      ).seal(contentKey);
+    }
+    final knownHere = devices[pubStd]?.id == request.deviceId;
+    if (asksOwner && !knownHere && !_approved.contains(request.deviceId)) {
+      waiting.update(request.deviceId, (n) => n + 1, ifAbsent: () => 1);
+      onWaiting?.call(request.deviceId);
+      if (!_approved.contains(request.deviceId)) {
+        return EnrollResponse(
+          nonce: request.nonce,
+          issuedAt: iat,
+          error: enrollPending,
+        ).seal(contentKey);
+      }
+    }
     // The same device again: the address stays, the key is replaced.
     String? address;
     devices.removeWhere((pub, d) {

@@ -31,6 +31,10 @@ func (e *Refused) Error() string {
 		return "this key already belongs to another device"
 	case proto.EnrollBusy:
 		return "the server is busy"
+	case proto.EnrollPending:
+		return "the device is waiting for the operator's approval"
+	case proto.EnrollDenied:
+		return "the operator has refused this device"
 	default:
 		return "the server refused: " + e.Reason
 	}

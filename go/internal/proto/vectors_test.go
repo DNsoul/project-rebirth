@@ -55,6 +55,9 @@ type Vectors struct {
 		ReplyBlob     string `json:"reply_blob"`
 		RefusedPlain  string `json:"refused_plain"`
 		RefusedBlob   string `json:"refused_blob"`
+
+		// ApprovalCode is what ApprovalCode gives for PublicKey.
+		ApprovalCode string `json:"approval_code"`
 	} `json:"enroll"`
 }
 
@@ -193,6 +196,7 @@ func buildVectors(t *testing.T) Vectors {
 	e.Name = "windows"
 	e.Address = "10.8.0.7/32"
 	e.EnvelopeNonce = Encode(nonce)
+	e.ApprovalCode = ApprovalCode(repeat(0x08)[:TunnelKeySize])
 
 	req := EnrollRequest{
 		V: FormatVersion, Kind: KindEnroll,

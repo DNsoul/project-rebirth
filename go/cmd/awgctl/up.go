@@ -86,7 +86,10 @@ func cmdUp(args []string) error {
 	if err != nil {
 		return err
 	}
-	gen, err := fleet.NewGeneration(fleet.GenOptions{Split: !*noSplit, ContentKey: contentKey})
+	tg := telegramFor(st, secrets)
+	gen, err := fleet.NewGeneration(fleet.GenOptions{
+		Split: !*noSplit, ContentKey: contentKey, Approval: tg != nil && tg.Approval,
+	})
 	if err != nil {
 		return err
 	}

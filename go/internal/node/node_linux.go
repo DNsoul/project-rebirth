@@ -46,9 +46,15 @@ type Node struct {
 
 	// Registration of devices; all nil unless the configuration asks for it.
 	reg        *enroll.Registry
+	access     *enroll.Access
+	enrollSrv  *enroll.Server
 	enrollStop context.CancelFunc
 	enrollDone chan struct{}
 	lastFlush  time.Time
+
+	// The operator's control socket, reached by the manager on this machine.
+	controlStop context.CancelFunc
+	controlDone chan struct{}
 }
 
 // New returns a node for the given configuration.
@@ -86,6 +92,7 @@ func (n *Node) Start(ctx context.Context) error {
 			return fmt.Errorf("open the device list: %w", err)
 		}
 		n.reg = reg
+		n.access = n.openAccess()
 		for _, d := range reg.Devices() {
 			key, err := enroll.ParseKey(d.PublicKey)
 			if err != nil {
@@ -121,8 +128,10 @@ func (n *Node) Start(ctx context.Context) error {
 		{"nat", n.configureNAT},
 		{"split resolver", n.startSplit},
 		{"device registration", n.startEnroll},
+		{"control socket", n.startControl},
 	} {
 		if err := step.fn(ctx); err != nil {
+			n.stopControl()
 			n.stopEnroll()
 			if n.split != nil {
 				n.split.stop()
@@ -143,7 +152,9 @@ func (n *Node) Close() error {
 	// Registration goes first of all: it adds peers to the device, and the
 	// device is about to go away. It is stopped before the lock is taken,
 	// because a request being answered right now needs the lock to reach the
-	// device, and stopping waits for it.
+	// device, and stopping waits for it. The operator's socket goes with it, for
+	// the same reason.
+	n.stopControl()
 	n.stopEnroll()
 
 	n.mu.Lock()
@@ -273,6 +284,26 @@ func (n *Node) openRegistry() (*enroll.Registry, error) {
 	return enroll.NewRegistry(path, pool, opts), nil
 }
 
+// openAccess reads the waiting list and the refusals. Like the device list, a
+// file that cannot be read is set aside rather than stopping the server; what
+// is lost is requests, which are asked again, and refusals, which the operator
+// can make again.
+func (n *Node) openAccess() *enroll.Access {
+	path := n.cfg.Enroll.Access()
+	a, err := enroll.LoadAccess(path, enroll.AccessOptions{})
+	if err == nil {
+		return a
+	}
+	aside := fmt.Sprintf("%s.bad-%d", path, time.Now().Unix())
+	if renameErr := os.Rename(path, aside); renameErr != nil {
+		n.log.Error("the waiting list could not be read nor set aside; starting with none", "error", err, "rename_error", renameErr)
+	} else {
+		n.log.Error("the waiting list could not be read; it was set aside and the server starts with none",
+			"error", err, "kept_as", aside)
+	}
+	return enroll.NewAccess(path, enroll.AccessOptions{})
+}
+
 // startEnroll opens the registration service. It listens on the server's own
 // tunnel address, so it is reachable only from inside the tunnel.
 func (n *Node) startEnroll(context.Context) error {
@@ -289,11 +320,18 @@ func (n *Node) startEnroll(context.Context) error {
 		return fmt.Errorf("listen on %s: %w", ec.Listen, err)
 	}
 	srv := &enroll.Server{
-		Registry:   n.reg,
-		Peers:      n,
-		ContentKey: key,
-		From:       netip.MustParseAddr(ec.PeerAddress),
-		Log:        n.log.With("component", "enroll"),
+		Registry:    n.reg,
+		Peers:       n,
+		ContentKey:  key,
+		From:        netip.MustParseAddr(ec.PeerAddress),
+		Access:      n.access,
+		Approval:    ec.Approval,
+		Preapproved: ec.Preapproved,
+		Log:         n.log.With("component", "enroll"),
+	}
+	n.enrollSrv = srv
+	if ec.Approval {
+		n.log.Info("new devices wait for the operator's approval")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -306,6 +344,55 @@ func (n *Node) startEnroll(context.Context) error {
 	}()
 	n.enrollStop, n.enrollDone = cancel, done
 	return nil
+}
+
+// startControl opens the operator's control socket, which only root on this
+// machine can reach. A server without registration has nothing to control.
+func (n *Node) startControl(context.Context) error {
+	if n.enrollSrv == nil {
+		return nil
+	}
+	path := DefaultControlPath
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	// A socket left by a previous run would make the listen fail.
+	_ = os.Remove(path)
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = ln.Close()
+		return fmt.Errorf("restrict %s: %w", path, err)
+	}
+	ctl := &Controller{
+		Srv: n.enrollSrv,
+		Peers: func() ([]PeerStatus, error) {
+			st, err := n.Status()
+			return st.Peers, err
+		},
+		Log: n.log.With("component", "control"),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := ctl.ServeControl(ctx, ln); err != nil {
+			n.log.Error("the control socket stopped", "error", err)
+		}
+	}()
+	n.controlStop, n.controlDone = cancel, done
+	return nil
+}
+
+func (n *Node) stopControl() {
+	if n.controlStop != nil {
+		n.controlStop()
+		<-n.controlDone
+		n.controlStop, n.controlDone = nil, nil
+		_ = os.Remove(DefaultControlPath)
+	}
 }
 
 // stopEnroll ends the service and saves the device list.

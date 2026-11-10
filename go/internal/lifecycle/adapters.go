@@ -264,6 +264,15 @@ func (h *SystemHost) ReadRegistry() ([]byte, error) {
 	return raw, err
 }
 
+// ReadAccess implements Host.
+func (h *SystemHost) ReadAccess() ([]byte, error) {
+	raw, err := os.ReadFile(enroll.DefaultAccessPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return raw, err
+}
+
 func (h *SystemHost) bodyPath() string { return filepath.Join(h.Cfg.Data(), "body.json") }
 
 // ReadBody implements Host.

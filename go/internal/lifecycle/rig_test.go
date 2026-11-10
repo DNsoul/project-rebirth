@@ -285,6 +285,7 @@ type fakeHost struct {
 	statusErr  error
 	pool, body []byte
 	registry   []byte
+	access     []byte
 	written    []byte
 }
 
@@ -296,6 +297,7 @@ func (h *fakeHost) NodeStatus(context.Context) (node.Status, error) {
 func (h *fakeHost) ReadWatchLog() ([]byte, error) { return h.watchLog, nil }
 func (h *fakeHost) ReadPool() ([]byte, error)     { return h.pool, nil }
 func (h *fakeHost) ReadRegistry() ([]byte, error) { return h.registry, nil }
+func (h *fakeHost) ReadAccess() ([]byte, error)   { return h.access, nil }
 func (h *fakeHost) ReadBody() ([]byte, error)     { return h.body, nil }
 func (h *fakeHost) WriteBody(b []byte) error      { h.written = b; return nil }
 

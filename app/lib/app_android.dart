@@ -10,6 +10,7 @@ import 'app.dart';
 import 'core/app_state.dart';
 import 'core/bootstrap.dart';
 import 'core/controller.dart';
+import 'core/device_label.dart';
 import 'core/dns_probe.dart';
 import 'core/gist_source.dart';
 import 'core/http_downloader.dart';
@@ -83,6 +84,14 @@ Future<void> runAndroid(List<String> args) async {
     networkChanges.add(available);
   };
 
+  // What the owner sees next to this phone's request to come in.
+  var model = '';
+  try {
+    model = await bridge.deviceModel();
+  } on Object catch (e) {
+    log('device model: $e');
+  }
+
   final controller = ConnectionController(
     bootstrap: bootstrap,
     gist: gistSourceFor(bootstrap),
@@ -92,7 +101,7 @@ Future<void> runAndroid(List<String> args) async {
     probe: UdpDnsProbe(),
     machine: AndroidMachineId(bridge),
     transportFactory: () => UdpEnrollTransport(log: log),
-    deviceName: 'android',
+    deviceName: deviceLabel(model, fallback: 'Android'),
     networkChanges: networkChanges.stream,
     log: log,
   );

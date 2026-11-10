@@ -121,6 +121,36 @@ type State struct {
 
 	// Mirrors are the other places the installers are kept.
 	Mirrors []Mirror `json:"mirrors,omitempty"`
+
+	// Telegram is who the operator's bot answers. The bot's token is a secret
+	// and lives in secrets.env, not here.
+	Telegram *Telegram `json:"telegram,omitempty"`
+}
+
+// Telegram says who the bot answers and whether new devices wait for them.
+type Telegram struct {
+	Owners []TelegramOwner `json:"owners"`
+
+	// Approval makes new devices wait for an owner's approval.
+	Approval bool `json:"approval,omitempty"`
+}
+
+// TelegramOwner is a person the bot answers. Name is for the operator's eyes.
+type TelegramOwner struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name,omitempty"`
+}
+
+// OwnerIDs lists the owners' ids.
+func (t *Telegram) OwnerIDs() []int64 {
+	if t == nil {
+		return nil
+	}
+	ids := make([]int64, 0, len(t.Owners))
+	for _, o := range t.Owners {
+		ids = append(ids, o.ID)
+	}
+	return ids
 }
 
 // SetMirror adds a mirror, or replaces the one of the same kind. What was set

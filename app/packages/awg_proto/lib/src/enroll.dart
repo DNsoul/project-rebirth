@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart';
+
 import 'b64.dart';
 import 'doc.dart' show formatVersion, sealJson;
 import 'envelope.dart';
@@ -29,6 +31,25 @@ const enrollBadRequest = 'bad_request';
 const enrollBusy = 'busy';
 const enrollFull = 'full';
 const enrollKeyInUse = 'key_in_use';
+
+/// On a server where the operator approves devices: the request is waiting for
+/// a decision (ask again later), or the operator said no.
+const enrollPending = 'pending';
+const enrollDenied = 'denied';
+
+/// Four digits derived from a device's tunnel key. The app shows them while it
+/// waits for approval and the operator sees them next to the request, so the
+/// two can be matched over the phone. Not a secret; it only tells one waiting
+/// device from another.
+Future<String> approvalCode(List<int> publicKey) async {
+  final hash = await Sha256().hash([
+    ...utf8.encode('awg-rotator/approval-code/v1'),
+    ...publicKey,
+  ]);
+  final b = hash.bytes;
+  final n = (b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]) % 10000;
+  return n.toString().padLeft(4, '0');
+}
 
 /// Where the server answers, as seen from inside the tunnel.
 const enrollServerHost = '10.8.0.1';

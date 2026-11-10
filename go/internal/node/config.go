@@ -94,6 +94,26 @@ type EnrollConfig struct {
 
 	// MaxDevices caps the device list; zero takes the default.
 	MaxDevices int `json:"max_devices,omitempty"`
+
+	// Approval makes new devices wait for the operator, and devices that come
+	// with a new key wait again. Off, everyone who has the app gets in, except
+	// devices the operator has refused or cut off.
+	Approval bool `json:"approval,omitempty"`
+
+	// Preapproved are tunnel keys (base64url) let in without the operator: the
+	// key the next server's own check registers with.
+	Preapproved []string `json:"preapproved,omitempty"`
+
+	// AccessPath overrides where the waiting list and the refusals are kept.
+	AccessPath string `json:"access_path,omitempty"`
+}
+
+// Access returns where the waiting list and the refusals are kept.
+func (e *EnrollConfig) Access() string {
+	if e.AccessPath != "" {
+		return e.AccessPath
+	}
+	return enroll.DefaultAccessPath
 }
 
 // Defaults for registration.
@@ -177,6 +197,11 @@ func (e *EnrollConfig) validate(c *Config) error {
 	}
 	if e.MaxDevices < 0 {
 		return errors.New("max devices is negative")
+	}
+	for i, k := range e.Preapproved {
+		if _, err := proto.Decode(k, proto.TunnelKeySize); err != nil {
+			return fmt.Errorf("preapproved key %d: %w", i, err)
+		}
 	}
 	return nil
 }

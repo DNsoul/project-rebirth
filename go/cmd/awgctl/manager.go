@@ -46,6 +46,7 @@ func buildManagerConfig(st *store.State, secrets config.Secrets, sshKeyID string
 		GitHubToken: secrets.GitHubToken,
 		GistID:      st.GistID,
 		GitLab:      gitLabSyncFor(st),
+		Telegram:    telegramFor(st, secrets),
 		ServerSeed:  st.Keys.ServerSeed,
 		Cert:        cert,
 		ContentKey:  st.Keys.ContentKey,
@@ -63,6 +64,19 @@ func buildManagerConfig(st *store.State, secrets config.Secrets, sshKeyID string
 		return nil, fmt.Errorf("настройки менеджера: %w", err)
 	}
 	return cfg, nil
+}
+
+// telegramFor is what a server's configuration says about the operator's bot:
+// nothing without a token or without anybody to answer.
+func telegramFor(st *store.State, secrets config.Secrets) *lifecycle.TelegramConfig {
+	if secrets.TelegramToken == "" || st.Telegram == nil || len(st.Telegram.Owners) == 0 {
+		return nil
+	}
+	return &lifecycle.TelegramConfig{
+		Token:    secrets.TelegramToken,
+		Owners:   st.Telegram.OwnerIDs(),
+		Approval: st.Telegram.Approval,
+	}
 }
 
 // gitLabSyncFor is what a server's configuration says about the second place the

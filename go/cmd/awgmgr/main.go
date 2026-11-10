@@ -18,9 +18,11 @@ import (
 	"syscall"
 	"time"
 
+	"awgrotator/internal/bot"
 	"awgrotator/internal/globalping"
 	"awgrotator/internal/lifecycle"
 	"awgrotator/internal/stores"
+	"awgrotator/internal/telegram"
 	"awgrotator/internal/vultr"
 )
 
@@ -70,6 +72,19 @@ func run(log *slog.Logger, configPath string, tickEvery time.Duration) error {
 		Log:    log,
 	}
 
+	// The operator's bot, when this line of servers has one. It is built before
+	// the manager so the manager can tell it what happens, and given the
+	// manager once that exists.
+	var operator *bot.Bot
+	if t := cfg.Telegram; t != nil {
+		operator = &bot.Bot{
+			API:     telegram.New(t.Token),
+			Devices: bot.SocketDevices{},
+			Owners:  t.Owners,
+			Log:     log.With("component", "bot"),
+		}
+	}
+
 	progress := func(format string, args ...any) { log.Info(fmt.Sprintf(format, args...)) }
 	engine := &lifecycle.Engine{
 		Cfg:    cfg,
@@ -96,6 +111,13 @@ func run(log *slog.Logger, configPath string, tickEvery time.Duration) error {
 		Watch:   &lifecycle.WatchLog{Path: filepath.Join(cfg.Data(), lifecycle.WatchLogName)},
 		Reverse: lifecycle.NewNetProber(),
 
+		ConfigPath: configPath,
+		OnEvent: func(e lifecycle.Event) {
+			if operator != nil {
+				operator.Notify(e)
+			}
+		},
+
 		Log: log,
 	})
 
@@ -107,6 +129,15 @@ func run(log *slog.Logger, configPath string, tickEvery time.Duration) error {
 		"auto_age", cfg.Policy.AutoAge, "auto_block", cfg.Policy.AutoBlock)
 	if err := manager.Start(ctx); err != nil {
 		return fmt.Errorf("start: %w", err)
+	}
+	if operator != nil {
+		operator.Manager = manager
+		go func() {
+			if err := operator.Run(ctx); err != nil {
+				log.Error("the bot stopped", "error", err)
+			}
+		}()
+		log.Info("the operator's bot is on", "owners", len(cfg.Telegram.Owners), "approval", cfg.Approval())
 	}
 
 	for {
@@ -121,6 +152,11 @@ func run(log *slog.Logger, configPath string, tickEvery time.Duration) error {
 			log.Info("stopping")
 			return nil
 		case <-time.After(tickEvery):
+		case a := <-manager.Actions():
+			// What the operator asked for through the bot, carried out here so
+			// that the manager's state keeps a single writer. The next pass
+			// follows at once, so a move asked for starts without waiting.
+			manager.Apply(ctx, a)
 		}
 	}
 }

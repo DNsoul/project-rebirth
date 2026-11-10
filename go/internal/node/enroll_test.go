@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/netip"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -96,6 +97,8 @@ func TestRegistrationCannotBeExposedByAMisconfiguredAddress(t *testing.T) {
 
 func TestEnrollSurvivesSaveAndLoad(t *testing.T) {
 	cfg := enrollConfig(t)
+	cfg.Enroll.Approval = true
+	cfg.Enroll.Preapproved = []string{proto.Encode(bytes.Repeat([]byte{9}, proto.TunnelKeySize))}
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := cfg.Save(path); err != nil {
 		t.Fatal(err)
@@ -104,8 +107,16 @@ func TestEnrollSurvivesSaveAndLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Enroll == nil || *got.Enroll != *cfg.Enroll {
+	if got.Enroll == nil || !reflect.DeepEqual(*got.Enroll, *cfg.Enroll) {
 		t.Errorf("registration settings did not survive: %+v", got.Enroll)
+	}
+}
+
+func TestABadPreapprovedKeyIsRefused(t *testing.T) {
+	cfg := enrollConfig(t)
+	cfg.Enroll.Preapproved = []string{"short"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("a preapproved key that is not a key was accepted")
 	}
 }
 
