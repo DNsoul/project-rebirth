@@ -136,6 +136,7 @@ class _Problem extends StatelessWidget {
         'Ждём одобрения владельца. Код для сверки: ${status.approvalCode}. '
         'Назовите его владельцу; нажатие на кнопку отменит ожидание.',
         Severity.warning,
+        highlight: status.approvalCode,
       );
     }
     if (update != null &&

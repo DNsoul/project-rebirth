@@ -13,17 +13,42 @@ enum Severity {
 /// A problem to tell the person about.
 @immutable
 class Notice {
-  const Notice(this.message, this.severity);
+  const Notice(this.message, this.severity, {this.highlight = ''});
 
   final String message;
   final Severity severity;
 
-  @override
-  bool operator ==(Object other) =>
-      other is Notice && other.message == message && other.severity == severity;
+  /// A part of the message to set apart by colour, such as a code the person
+  /// has to read out. Empty for none.
+  final String highlight;
 
   @override
-  int get hashCode => Object.hash(message, severity);
+  bool operator ==(Object other) =>
+      other is Notice &&
+      other.message == message &&
+      other.severity == severity &&
+      other.highlight == highlight;
+
+  @override
+  int get hashCode => Object.hash(message, severity, highlight);
+}
+
+/// [text] as spans, with each occurrence of [highlight] in [colour].
+List<TextSpan> highlighted(String text, String highlight, Color colour) {
+  if (highlight.isEmpty || !text.contains(highlight)) {
+    return [TextSpan(text: text)];
+  }
+  final parts = text.split(highlight);
+  return [
+    for (var i = 0; i < parts.length; i++) ...[
+      if (i > 0)
+        TextSpan(
+          text: highlight,
+          style: TextStyle(color: colour),
+        ),
+      if (parts[i].isNotEmpty) TextSpan(text: parts[i]),
+    ],
+  ];
 }
 
 /// Splits a message into what happened and what to do about it: the first
@@ -109,8 +134,10 @@ class _Bar extends StatelessWidget {
             ),
             if (detail.isNotEmpty) ...[
               const SizedBox(height: 2),
-              Text(
-                detail,
+              Text.rich(
+                TextSpan(
+                  children: highlighted(detail, notice.highlight, Ember.gold),
+                ),
                 key: const ValueKey('error-detail'),
                 maxLines: 4,
                 overflow: TextOverflow.ellipsis,

@@ -378,6 +378,18 @@ void main() {
         );
         expect(find.textContaining('Ждём одобрения владельца'), findsOneWidget);
         expect(find.textContaining('3045'), findsOneWidget);
+        // The code stands out by colour from the words around it.
+        final detail = tester.widget<Text>(
+          find.byKey(const ValueKey('error-detail')),
+        );
+        final spans = (detail.textSpan! as TextSpan).children!.cast<TextSpan>();
+        final code = spans.singleWhere((s) => s.text == '3045');
+        expect(code.style?.color, Ember.gold);
+        expect(
+          spans.where((s) => s.text != '3045').every((s) => s.style == null),
+          isTrue,
+          reason: 'only the code is coloured',
+        );
 
         // The same code left on a status that is no longer connecting says
         // nothing: the wait is over.

@@ -173,6 +173,25 @@ void main() {
         ),
         at: 140,
       ),
+      const _Shot(
+        '7c-waiting-for-owner',
+        AppStatus(
+          Phase.connecting,
+          message: 'Ждём одобрения владельца. Код для сверки: 3045',
+          step: ConnectStep.server,
+          approvalCode: '3045',
+        ),
+        at: 350,
+      ),
+      const _Shot(
+        '7d-refused',
+        AppStatus(
+          Phase.failed,
+          message: 'Владелец закрыл доступ к VPN для этого устройства.',
+          step: ConnectStep.server,
+        ),
+        at: 140,
+      ),
       _Shot(
         '8-connected-update',
         AppStatus(Phase.connected, region: 'sto', since: since),
@@ -276,6 +295,16 @@ void main() {
       [named('2c-connecting')],
       const Size(360, 780),
       'phone-connecting.png',
+    );
+    await render(
+      [named('7c-waiting-for-owner')],
+      const Size(360, 780),
+      'phone-waiting-for-owner.png',
+    );
+    await render(
+      [named('7d-refused')],
+      const Size(360, 780),
+      'phone-refused.png',
     );
   });
 }
