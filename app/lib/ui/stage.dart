@@ -414,6 +414,7 @@ class RebirthStage extends StatefulWidget {
     required this.phase,
     required this.onPressed,
     required this.size,
+    this.onLongPress,
     this.lostContact = false,
     this.recovering = false,
     this.step,
@@ -428,6 +429,10 @@ class RebirthStage extends StatefulWidget {
   /// The stage of the connection being made, or the one it failed at.
   final ConnectStep? step;
   final VoidCallback onPressed;
+
+  /// A long press: saves the journal. Works whatever the connection is doing,
+  /// and a short press does what it always did.
+  final VoidCallback? onLongPress;
 
   /// The width of the button.
   final double size;
@@ -496,6 +501,7 @@ class _RebirthStageState extends State<RebirthStage>
     return Semantics(
       button: true,
       label: _label,
+      onLongPressHint: widget.onLongPress == null ? null : 'сохранить журнал',
       child: TweenAnimationBuilder<StageLook>(
         tween: StageLookTween(begin: target, end: target),
         duration: const Duration(milliseconds: 600),
@@ -593,6 +599,7 @@ class _RebirthStageState extends State<RebirthStage>
                                 alpha: 0.08,
                               ),
                               onTap: _pressable ? widget.onPressed : null,
+                              onLongPress: widget.onLongPress,
                               child: SizedBox(width: d, height: d),
                             ),
                           ),

@@ -80,6 +80,25 @@ class AppStatus {
   /// Connecting or moving: something is in progress that can still be called off.
   bool get canBeCancelled =>
       phase == Phase.connecting || phase == Phase.switching;
+
+  /// The state in a line for the journal: `connected sto, lost contact`. The
+  /// words of the progress messages are left out (the stage says it); a
+  /// failure's message and a note are kept.
+  String describe() {
+    final parts = <String>[
+      [
+        phase.name,
+        if (region.isNotEmpty) region,
+        if (step != null) '(${step!.name})',
+      ].join(' '),
+      if (lostContact) 'lost contact',
+      if (recovering) 'recovering',
+      if (approvalCode.isNotEmpty) 'waiting for the owner',
+      if (phase == Phase.failed && message.isNotEmpty) message,
+      if (note.isNotEmpty) 'note: $note',
+    ];
+    return parts.join(', ');
+  }
 }
 
 /// What the screen needs: what is going on, and what a person can ask for. The
@@ -194,6 +213,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
 
   final _statusController = StreamController<AppStatus>.broadcast();
   AppStatus _status = const AppStatus(Phase.idle);
+  String _described = const AppStatus(Phase.idle).describe();
   PersistedState? _state;
   _Active? _active;
   Timer? _pollTimer;
@@ -244,6 +264,13 @@ class ConnectionController implements ConnectionView, ReleaseSource {
   Stream<AppStatus> get statusStream => _statusController.stream;
 
   void _emit(AppStatus s) {
+    // Every change the screen would show, once: what the person saw, in the
+    // journal, next to why.
+    final line = s.describe();
+    if (line != _described) {
+      _described = line;
+      _log('state: $line');
+    }
     _status = s;
     if (!_statusController.isClosed) {
       _statusController.add(s);

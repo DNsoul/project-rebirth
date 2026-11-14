@@ -38,6 +38,7 @@ class MainActivity : FlutterActivity() {
     private var pendingNotifications: MethodChannel.Result? = null
     private var pendingBattery: MethodChannel.Result? = null
     private var waitingForSettings: MethodChannel.Result? = null
+    private var pendingSave: PendingSave? = null
     private var settingsAnswer: () -> String = { "denied" }
     private var leftForSettings = false
 
@@ -59,6 +60,8 @@ class MainActivity : FlutterActivity() {
         for (pending in listOf(pendingPermission, pendingNotifications, pendingBattery, waitingForSettings)) {
             pending?.error("closed", "the screen was closed before the answer", null)
         }
+        pendingSave?.result?.error("closed", "the screen was closed before the answer", null)
+        pendingSave = null
         pendingPermission = null
         pendingNotifications = null
         pendingBattery = null
@@ -78,6 +81,8 @@ class MainActivity : FlutterActivity() {
             "battery" -> ensureBatteryExemption(result)
 
             "install" -> ensureInstallPermission(result)
+
+            "saveToDownloads" -> saveWithPermission(call, result)
 
             else -> result.notImplemented()
         }
@@ -277,6 +282,23 @@ class MainActivity : FlutterActivity() {
         permissions: Array<out String>,
         grantResults: IntArray,
     ) {
+        if (requestCode == REQUEST_STORAGE) {
+            val pending = pendingSave
+            pendingSave = null
+            val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+            if (pending == null) return
+            if (!granted) {
+                NativeLog.i("journal: no permission to write to Downloads")
+                pending.result.error("denied", "no permission to write to Downloads", null)
+                return
+            }
+            Thread {
+                Downloads.saveAndAnswer(applicationContext, pending.name, pending.bytes) { outcome ->
+                    ui.post { Downloads.reply(pending.result, outcome) }
+                }
+            }.start()
+            return
+        }
         if (requestCode == REQUEST_NOTIFICATIONS) {
             val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
             pendingNotifications?.success(if (granted) "granted" else "denied")
@@ -285,6 +307,26 @@ class MainActivity : FlutterActivity() {
         }
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
     }
+
+    /**
+     * Android 7–9: asks for the right to write to the shared storage, then saves
+     * the journal into Downloads. Later versions never come here: MediaStore
+     * needs no permission.
+     */
+    private fun saveWithPermission(call: MethodCall, result: MethodChannel.Result) {
+        if (pendingSave != null) {
+            result.error("busy", "already saving", null)
+            return
+        }
+        pendingSave = PendingSave(
+            call.argument<String>("name") ?: "rebirth-logs.txt",
+            call.argument<ByteArray>("bytes") ?: ByteArray(0),
+            result,
+        )
+        requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), REQUEST_STORAGE)
+    }
+
+    private class PendingSave(val name: String, val bytes: ByteArray, val result: MethodChannel.Result)
 
     /** Asks for the VPN permission if the app does not have it yet. */
     private fun prepare(result: MethodChannel.Result) {
@@ -328,6 +370,7 @@ class MainActivity : FlutterActivity() {
         private const val REQUEST_VPN = 0x7670
         private const val REQUEST_NOTIFICATIONS = 0x6e74
         private const val REQUEST_BATTERY = 0x6274
+        private const val REQUEST_STORAGE = 0x7374
         private const val ASKED_NOTIFICATIONS = "asked_notifications"
         private const val NOTIFICATION_SETTINGS_ASKED_AT = "notification_settings_asked_at"
         private const val INSTALL_SETTINGS_ASKED_AT = "install_settings_asked_at"

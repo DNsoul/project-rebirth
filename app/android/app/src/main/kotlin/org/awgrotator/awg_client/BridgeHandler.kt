@@ -61,6 +61,7 @@ class BridgeHandler(
                             .establishTun(session, addresses, routes, dns, mtu)
                         ui.post { result.success(fd) }
                     } catch (e: Exception) {
+                        NativeLog.e("could not open the VPN interface", e)
                         ui.post { result.error("establish", e.message, null) }
                     }
                 }
@@ -99,6 +100,26 @@ class BridgeHandler(
             }
 
             "filesDir" -> result.success(app.filesDir.absolutePath)
+
+            // For the first lines of a saved journal.
+            "androidVersion" ->
+                result.success("Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+
+            // The journal, into Downloads. Android 7–9 may first have to ask the
+            // person, which needs the screen.
+            "saveToDownloads" -> {
+                val name = call.argument<String>("name") ?: "rebirth-logs.txt"
+                val bytes = call.argument<ByteArray>("bytes") ?: ByteArray(0)
+                if (Downloads.canWrite(app)) {
+                    worker.execute {
+                        Downloads.saveAndAnswer(app, name, bytes) { outcome ->
+                            ui.post { Downloads.reply(result, outcome) }
+                        }
+                    }
+                } else {
+                    toScreen(call, result)
+                }
+            }
 
             else -> toScreen(call, result)
         }

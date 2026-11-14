@@ -15,12 +15,16 @@ import 'core/dns_probe.dart';
 import 'core/gist_source.dart';
 import 'core/http_downloader.dart';
 import 'core/launch_options.dart';
+import 'core/log_export.dart';
+import 'core/log_journal.dart';
+import 'core/log_scrub.dart';
 import 'core/logon_connect.dart';
 import 'core/stall_watchdog.dart';
 import 'core/udp_enroll_transport.dart';
 import 'core/updater.dart';
 import 'core/version.dart';
 import 'package:awg_proto/awg_proto.dart' show osWindows;
+import 'platform/windows/downloads_folder.dart';
 import 'platform/windows/single_instance.dart';
 import 'platform/windows/tray.dart';
 import 'platform/windows/update_installer.dart';
@@ -37,18 +41,11 @@ Future<void> runWindows(List<String> args) async {
   final options = LaunchOptions.parse(args);
 
   final dataDir = '${Platform.environment['LOCALAPPDATA'] ?? '.'}\\awg-rotator';
-  final logFile = File('$dataDir\\app.log');
-  void log(String line) {
-    try {
-      logFile.parent.createSync(recursive: true);
-      logFile.writeAsStringSync(
-        '${DateTime.now().toIso8601String()} $line\n',
-        mode: FileMode.append,
-      );
-    } on FileSystemException {
-      // The log is a convenience; losing a line is not worth stopping for.
-    }
-  }
+  // The journal: in the app's folder, limited in size, scrubbed of keys and
+  // the servers' addresses. Saved into Downloads by a long press on the button.
+  final scrubber = LogScrubber();
+  final journal = LogJournal('$dataDir\\app.log', scrubber: scrubber);
+  void log(String line) => journal.write(line);
 
   // Whatever goes wrong without anyone having asked for it ends up in the log
   // instead of silently taking the app with it.
@@ -82,6 +79,12 @@ Future<void> runWindows(List<String> args) async {
     );
     return;
   }
+
+  // What only this build knows, and so only it can take out of the journal.
+  scrubber
+    ..addSecret(bootstrap.gistId)
+    ..addSecret(bootstrap.gistOwner);
+  log('start: Rebirth $appVersion (build $appBuild)');
 
   final controller = ConnectionController(
     bootstrap: bootstrap,
@@ -143,7 +146,22 @@ Future<void> runWindows(List<String> args) async {
   // The window comes first. Everything slow (looking for what a previous run left
   // behind, installing the start-up guard) happens behind it, and a connection
   // asked for meanwhile simply waits its turn.
-  runApp(App(controller: controller, updates: updates));
+  final exporter = LogExporter(
+    journal: journal,
+    // Slow or failed calls to the notification area, from the runner
+    // (windows/runner/tray_icon.cpp), in the same format.
+    otherJournals: ['$dataDir\\native.log'],
+    sink: DirectoryLogSink(() async => windowsDownloads()),
+    device: () async => Platform.operatingSystemVersion,
+    state: () => controller.status.describe(),
+  );
+  runApp(
+    App(
+      controller: controller,
+      updates: updates,
+      saveLogs: () => saveJournal(exporter, log),
+    ),
+  );
 
   StallWatchdog(log: log).start();
   unawaited(

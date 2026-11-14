@@ -34,6 +34,7 @@ object RebirthEngine {
     fun get(context: Context): FlutterEngine {
         engine?.let { return it }
         val app = context.applicationContext
+        NativeLog.init(app)
         val created = FlutterEngine(app)
         // The screen does not register them for an engine it was handed.
         GeneratedPluginRegistrant.registerWith(created)

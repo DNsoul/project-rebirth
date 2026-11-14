@@ -29,6 +29,8 @@ class AwgVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
+        NativeLog.init(applicationContext)
+        NativeLog.i("VPN service started")
         instance = this
         // For as long as there is a VPN: when the phone moves to another network
         // the program that looks after the tunnel is told, so that the tunnel
@@ -45,6 +47,7 @@ class AwgVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        NativeLog.i("VPN service stopped")
         watcher?.stop()
         watcher = null
         instance = null
@@ -53,6 +56,7 @@ class AwgVpnService : VpnService() {
 
     /** The user took the permission away, or another VPN app took over. */
     override fun onRevoke() {
+        NativeLog.i("the system took the VPN away")
         onRevoked?.invoke()
         super.onRevoke()
     }
@@ -131,6 +135,10 @@ class AwgVpnService : VpnService() {
         // unsaid, some versions of Android treat the VPN as a metered connection
         // (the way the official WireGuard and AmneziaWG clients say it once, here).
         setUnderlyingNetworks(null)
+        NativeLog.i(
+            "VPN interface opened: ${addresses.size} address(es), ${routes.size} route(s), " +
+                "${dns.size} name server(s), mtu $mtu",
+        )
         return pfd.detachFd()
     }
 

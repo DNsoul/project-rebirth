@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../core/controller.dart';
+import '../core/log_export.dart';
 import '../core/updater.dart';
 import 'error_panel.dart';
 import 'stage.dart';
@@ -21,13 +22,71 @@ import 'update_banner.dart';
 /// and its size follows the window; the other two lie over the top and bottom
 /// edges and push nothing, so nothing has to scroll and nothing moves when they
 /// come and go.
-class HomePage extends StatelessWidget {
-  const HomePage({super.key, required this.controller, this.updates});
+///
+/// A long press on the button saves the journal into Downloads; the bar at the
+/// bottom then says for a few seconds where it went, or why it could not.
+class HomePage extends StatefulWidget {
+  const HomePage({
+    super.key,
+    required this.controller,
+    this.updates,
+    this.saveLogs,
+  });
 
   final ConnectionView controller;
 
   /// Where a newer version is offered. Without it there is no such strip.
   final UpdateView? updates;
+
+  /// Saves the journal and returns the name of the file; throws
+  /// [LogExportException] when it cannot. Without it a long press does nothing.
+  final Future<String> Function()? saveLogs;
+
+  /// How long the bar says what became of the journal.
+  static const flashFor = Duration(seconds: 5);
+
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  ConnectionView get controller => widget.controller;
+  UpdateView? get updates => widget.updates;
+
+  /// What the bar says for a moment, over anything else it would say.
+  Notice? _flash;
+  Timer? _flashTimer;
+  bool _saving = false;
+
+  @override
+  void dispose() {
+    _flashTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _saveLogs() async {
+    final save = widget.saveLogs;
+    if (save == null || _saving) return;
+    _saving = true;
+    // The button itself gives the long press its click or buzz (InkWell).
+    Notice notice;
+    try {
+      final name = await save();
+      notice = Notice.lines(exportSavedTitle, name, Severity.info);
+    } on LogExportException catch (e) {
+      notice = Notice(e.message, Severity.error);
+    } on Object {
+      notice = const Notice(exportFailedMessage, Severity.error);
+    } finally {
+      _saving = false;
+    }
+    if (!mounted) return;
+    setState(() => _flash = notice);
+    _flashTimer?.cancel();
+    _flashTimer = Timer(HomePage.flashFor, () {
+      if (mounted) setState(() => _flash = null);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -59,6 +118,9 @@ class HomePage extends StatelessWidget {
                       step: status.step,
                       size: side,
                       onPressed: () => _press(status),
+                      onLongPress: widget.saveLogs == null
+                          ? null
+                          : () => unawaited(_saveLogs()),
                     ),
                   ),
                   if (updates != null)
@@ -78,6 +140,7 @@ class HomePage extends StatelessWidget {
                     child: _Problem(
                       status: status,
                       updates: updates,
+                      flash: _flash,
                       bottomInset: inset.bottom,
                     ),
                   ),
@@ -115,13 +178,18 @@ class _Problem extends StatelessWidget {
     required this.status,
     required this.updates,
     required this.bottomInset,
+    this.flash,
   });
 
   final AppStatus status;
   final UpdateView? updates;
   final double bottomInset;
 
+  /// Said for a moment over everything else: what became of the journal.
+  final Notice? flash;
+
   Notice? _notice(UpdateStatus? update) {
+    if (flash != null) return flash;
     if (status.phase == Phase.failed) {
       return Notice(
         status.message.isEmpty

@@ -14,11 +14,15 @@ import 'core/device_label.dart';
 import 'core/dns_probe.dart';
 import 'core/gist_source.dart';
 import 'core/http_downloader.dart';
+import 'core/log_export.dart';
+import 'core/log_journal.dart';
+import 'core/log_scrub.dart';
 import 'core/stall_watchdog.dart';
 import 'core/udp_enroll_transport.dart';
 import 'core/updater.dart';
 import 'core/version.dart';
 import 'package:awg_proto/awg_proto.dart' show osAndroid;
+import 'platform/android/android_logs.dart';
 import 'platform/android/android_system.dart';
 import 'platform/android/apk_installer.dart';
 import 'platform/android/android_tunnel.dart';
@@ -35,18 +39,17 @@ Future<void> runAndroid(List<String> args) async {
 
   final bridge = MethodChannelVpnBridge();
   final dataDir = await bridge.filesDir();
-  final logFile = File('$dataDir/app.log');
-  void log(String line) {
-    debugPrint('awg: $line'); // visible with: adb logcat -s flutter
-    try {
-      logFile.writeAsStringSync(
-        '${DateTime.now().toIso8601String()} $line\n',
-        mode: FileMode.append,
-      );
-    } on FileSystemException {
-      // The log is a convenience; losing a line is not worth stopping for.
-    }
-  }
+  // The journal: in the app's folder, limited in size, scrubbed of keys and
+  // the servers' addresses. Saved into Downloads by a long press on the button,
+  // merged with the Android side's (native.log, written by NativeLog.kt).
+  final scrubber = LogScrubber();
+  final journal = LogJournal(
+    '$dataDir/app.log',
+    scrubber: scrubber,
+    echo: (line) => debugPrint('awg: $line'), // also: adb logcat -s flutter
+  );
+  void log(String line) => journal.write(line);
+  log('start: Rebirth $appVersion (build $appBuild)');
 
   FlutterError.onError = (details) =>
       log('flutter: ${details.exceptionAsString()}');
@@ -66,6 +69,11 @@ Future<void> runAndroid(List<String> args) async {
     );
     return;
   }
+
+  // What only this build knows, and so only it can take out of the journal.
+  scrubber
+    ..addSecret(bootstrap.gistId)
+    ..addSecret(bootstrap.gistOwner);
 
   final AwgNative native;
   try {
@@ -140,7 +148,24 @@ Future<void> runAndroid(List<String> args) async {
 
   controller.statusStream.listen(tell);
 
-  runApp(App(controller: controller, updates: updates));
+  final exporter = LogExporter(
+    journal: journal,
+    otherJournals: [nativeJournalPath(dataDir)],
+    sink: AndroidDownloadsSink(),
+    device: () async {
+      final version = await androidVersion();
+      return [model, version].where((s) => s.isNotEmpty).join(', ');
+    },
+    state: () => controller.status.describe(),
+  );
+
+  runApp(
+    App(
+      controller: controller,
+      updates: updates,
+      saveLogs: () => saveJournal(exporter, log),
+    ),
+  );
 
   StallWatchdog(log: log).start();
   // First what the person has to allow, one question at a time: the notification

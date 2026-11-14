@@ -8,14 +8,31 @@ enum Severity {
 
   /// Something is not as it should be, but the app is carrying on.
   warning,
+
+  /// Something the person asked for has been done (the journal was saved).
+  info,
 }
 
 /// A problem to tell the person about.
 @immutable
 class Notice {
-  const Notice(this.message, this.severity, {this.highlight = ''});
+  const Notice(this.message, this.severity, {this.highlight = ''})
+    : title = null,
+      detail = '';
+
+  /// A notice whose two lines are given, rather than found by splitting the
+  /// message at its first sentence: for a file name, which must not be broken.
+  const Notice.lines(String this.title, this.detail, this.severity)
+    : message = '$title $detail',
+      highlight = '';
 
   final String message;
+
+  /// The first line, when given; otherwise it is the message's first sentence.
+  final String? title;
+
+  /// The second line, when [title] is given.
+  final String detail;
   final Severity severity;
 
   /// A part of the message to set apart by colour, such as a code the person
@@ -27,10 +44,12 @@ class Notice {
       other is Notice &&
       other.message == message &&
       other.severity == severity &&
-      other.highlight == highlight;
+      other.highlight == highlight &&
+      other.title == title &&
+      other.detail == detail;
 
   @override
-  int get hashCode => Object.hash(message, severity, highlight);
+  int get hashCode => Object.hash(message, severity, highlight, title, detail);
 }
 
 /// [text] as spans, with each occurrence of [highlight] in [colour].
@@ -104,14 +123,20 @@ class _Bar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final error = notice.severity == Severity.error;
-    final (title, detail) = splitMessage(notice.message);
+    final (title, detail) = notice.title != null
+        ? (notice.title!, notice.detail)
+        : splitMessage(notice.message);
+    final (background, titleColour) = switch (notice.severity) {
+      Severity.error => (const Color(0xFF241210), Ember.alarm),
+      Severity.warning => (const Color(0xFF241B0E), Ember.amber),
+      Severity.info => (Ember.surfaceHigh, Ember.gold),
+    };
     final text = Theme.of(context).textTheme;
 
     return Container(
       key: const ValueKey('error-panel'),
       width: double.infinity,
-      color: error ? const Color(0xFF241210) : const Color(0xFF241B0E),
+      color: background,
       padding: EdgeInsets.fromLTRB(14, 10, 14, bottomInset + 10),
       // Selectable, so that an error can be copied and sent to whoever looks after
       // the servers. (Not SelectableText: with a line limit it keeps room for all
@@ -129,7 +154,7 @@ class _Bar extends StatelessWidget {
               style: text.bodyMedium?.copyWith(
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
-                color: error ? Ember.alarm : Ember.amber,
+                color: titleColour,
               ),
             ),
             if (detail.isNotEmpty) ...[

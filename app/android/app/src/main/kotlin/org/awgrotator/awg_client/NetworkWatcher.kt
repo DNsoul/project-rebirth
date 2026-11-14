@@ -55,7 +55,9 @@ class NetworkWatcher(
         try {
             cm.registerNetworkCallback(request, cb)
             callback = cb
+            NativeLog.i("network: watching; now ${describe(last)}")
         } catch (e: SecurityException) {
+            NativeLog.e("network: not allowed to watch", e)
             // Without the right to watch there is nothing to report; the tunnel
             // then relies on its own timers, as it did before.
         }
@@ -82,6 +84,7 @@ class NetworkWatcher(
         val now = snapshot()
         if (now == last) return
         last = now
+        NativeLog.i("network: changed; now ${describe(now)}")
         onChange(now.isNotEmpty())
     }
 
@@ -104,6 +107,11 @@ class NetworkWatcher(
         lines.sort()
         return lines.joinToString(";")
     }
+
+    /** "wlan0 192.168.1.5; rmnet_data0 10.x.x.7", or "none". */
+    private fun describe(snapshot: String): String =
+        if (snapshot.isEmpty()) "none"
+        else snapshot.split(';').joinToString("; ") { it.substringAfter(' ') }
 
     private companion object {
         // Long enough to fold the burst of reports a switch makes into one,

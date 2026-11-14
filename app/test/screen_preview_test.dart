@@ -11,6 +11,7 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:awg_client/core/controller.dart';
+import 'package:awg_client/core/log_export.dart';
 import 'package:awg_client/core/updater.dart';
 import 'package:awg_client/ui/home_page.dart';
 import 'package:awg_client/ui/theme.dart';
@@ -55,11 +56,21 @@ class _Updates implements UpdateView {
 }
 
 class _Shot {
-  const _Shot(this.name, this.status, {this.update, this.at = 1700});
+  const _Shot(
+    this.name,
+    this.status, {
+    this.update,
+    this.at = 1700,
+    this.saveLogs,
+  });
 
   final String name;
   final AppStatus status;
   final UpdateStatus? update;
+
+  /// When set, the button is long-pressed first, to show what the bar says
+  /// about the saved journal.
+  final Future<String> Function()? saveLogs;
 
   /// The moment, in milliseconds, at which to take it.
   final int at;
@@ -231,6 +242,26 @@ void main() {
               'Скачанный файл не прошёл проверку. Установка отменена, повторите позже.',
         ),
       ),
+      _Shot(
+        'c-log-saved',
+        AppStatus(Phase.connected, region: 'sto', since: since),
+        saveLogs: () async => 'rebirth-logs-20261114-093005.txt',
+      ),
+      _Shot(
+        'c2-log-saved-idle',
+        const AppStatus(Phase.idle),
+        saveLogs: () async => 'rebirth-logs-20261114-093005.txt',
+      ),
+      _Shot(
+        'c3-log-denied',
+        const AppStatus(Phase.idle),
+        saveLogs: () async => throw LogExportException(exportDeniedMessage),
+      ),
+      _Shot(
+        'c4-log-failed',
+        AppStatus(Phase.connected, region: 'sto', since: since),
+        saveLogs: () async => throw LogExportException(exportFailedMessage),
+      ),
     ];
 
     Future<void> render(List<_Shot> list, Size size, String file) async {
@@ -256,6 +287,7 @@ void main() {
                         key: UniqueKey(),
                         controller: _View(s.status),
                         updates: s.update == null ? null : _Updates(s.update),
+                        saveLogs: s.saveLogs,
                       ),
                     ),
                   ),
@@ -264,6 +296,13 @@ void main() {
           ),
         ),
       );
+      // The journal saved by a long press: the bar says so for a few seconds.
+      final buttons = find.byKey(const ValueKey('power-button'));
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].saveLogs != null) {
+          await tester.longPress(buttons.at(i));
+        }
+      }
       // One moment for the whole sheet; the pictures that want another take it
       // as the nearest of the two common ones.
       await tester.pump(Duration(milliseconds: list.first.at));
@@ -317,6 +356,16 @@ void main() {
       [named('3-connected'), named('5b-recovering'), named('5-silent')],
       const Size(360, 780),
       'phone-recovering-compare.png',
+    );
+    await render(
+      [named('c-log-saved')],
+      const Size(360, 780),
+      'phone-log-saved.png',
+    );
+    await render(
+      [named('c3-log-denied')],
+      const Size(360, 780),
+      'phone-log-denied.png',
     );
     await render(
       [named('7d-refused')],

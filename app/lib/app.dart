@@ -8,12 +8,15 @@ import 'ui/home_page.dart';
 import 'ui/theme.dart';
 
 class App extends StatefulWidget {
-  const App({super.key, required this.controller, this.updates});
+  const App({super.key, required this.controller, this.updates, this.saveLogs});
 
   final ConnectionController controller;
 
   /// Offers a newer version, when there is one.
   final UpdateView? updates;
+
+  /// Saves the journal into Downloads (a long press on the button).
+  final Future<String> Function()? saveLogs;
 
   @override
   State<App> createState() => _AppState();
@@ -51,7 +54,11 @@ class _AppState extends State<App> {
       themeMode: ThemeMode.dark,
       theme: appTheme(Brightness.light),
       darkTheme: appTheme(Brightness.dark),
-      home: HomePage(controller: widget.controller, updates: widget.updates),
+      home: HomePage(
+        controller: widget.controller,
+        updates: widget.updates,
+        saveLogs: widget.saveLogs,
+      ),
     );
   }
 }

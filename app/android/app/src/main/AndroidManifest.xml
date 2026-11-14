@@ -14,6 +14,12 @@
     <!-- A VPN that the system stops to save battery is no VPN: the app asks, once,
          to be left running. The person answers in the system's own dialog. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Android 7-9 only: to save the journal into Downloads (a long press on the
+         button). From Android 10 the file goes in through MediaStore, which needs
+         no permission, so it is not asked for there. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
 
     <application
         android:label="Rebirth"
