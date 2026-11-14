@@ -792,12 +792,17 @@ class RingPainter extends CustomPainter {
     const end = start + sweep;
     final tip = centre + Offset(math.cos(end), math.sin(end)) * radius;
     final along = Offset(-math.sin(end), math.cos(end));
+    // 11 long on the button itself (at its smallest, 110 wide, the ring's
+    // radius is 53.5); shorter on the small ones in the guide, where 11 would be
+    // half the ring.
+    final length = math.min(11.0, radius * 0.21);
     Offset wing(double turn) {
       final c = math.cos(turn);
       final s = math.sin(turn);
-      // `along` turned by [turn], then reversed, 11 long.
+      // `along` turned by [turn], then reversed.
       return tip -
-          Offset(along.dx * c - along.dy * s, along.dx * s + along.dy * c) * 11;
+          Offset(along.dx * c - along.dy * s, along.dx * s + along.dy * c) *
+              length;
     }
 
     canvas.drawPath(

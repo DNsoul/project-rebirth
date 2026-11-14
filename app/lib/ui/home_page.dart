@@ -8,6 +8,7 @@ import '../core/log_export.dart';
 import '../core/updater.dart';
 import 'error_panel.dart';
 import 'stage.dart';
+import 'status_guide.dart';
 import 'theme.dart';
 import 'update_banner.dart';
 
@@ -22,6 +23,9 @@ import 'update_banner.dart';
 /// and its size follows the window; the other two lie over the top and bottom
 /// edges and push nothing, so nothing has to scroll and nothing moves when they
 /// come and go.
+///
+/// In the top corner is a small drawn "i": it opens the one place where the
+/// states of the button are explained in words (`status_guide.dart`).
 ///
 /// A long press on the button saves the journal into Downloads; the bar at the
 /// bottom then says for a few seconds where it went, or why it could not.
@@ -123,16 +127,21 @@ class _HomePageState extends State<HomePage> {
                           : () => unawaited(_saveLogs()),
                     ),
                   ),
-                  if (updates != null)
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      top: 0,
-                      child: UpdateBanner(
-                        updates: updates!,
-                        topInset: inset.top,
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    top: 0,
+                    child: _TopEdge(
+                      updates: updates,
+                      topInset: inset.top,
+                      onGuide: () => unawaited(
+                        showStatusGuide(
+                          context,
+                          canSaveLogs: widget.saveLogs != null,
+                        ),
                       ),
                     ),
+                  ),
                   Positioned(
                     left: 0,
                     right: 0,
@@ -168,6 +177,55 @@ class _HomePageState extends State<HomePage> {
       case Phase.disconnecting:
         break; // already on its way; a second press has nothing to add
     }
+  }
+}
+
+/// The top edge: the offer of a newer version when there is one, and under it, in
+/// the corner, the "i" that opens what the states of the button mean. The "i"
+/// moves down with the strip as it comes, so the two never overlap.
+class _TopEdge extends StatelessWidget {
+  const _TopEdge({
+    required this.updates,
+    required this.topInset,
+    required this.onGuide,
+  });
+
+  final UpdateView? updates;
+  final double topInset;
+  final VoidCallback onGuide;
+
+  static const _gap = 6.0;
+
+  Widget _info(bool underStrip) => Align(
+    alignment: Alignment.topRight,
+    child: AnimatedPadding(
+      duration: const Duration(milliseconds: 220),
+      // Under the strip, the strip has already kept clear of the status bar.
+      padding: EdgeInsets.fromLTRB(0, underStrip ? 0 : topInset, _gap, 0),
+      child: Padding(
+        padding: const EdgeInsets.only(top: _gap),
+        child: StatusGuideButton(onPressed: onGuide),
+      ),
+    ),
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    final u = updates;
+    if (u == null) {
+      return _info(false);
+    }
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        UpdateBanner(updates: u, topInset: topInset),
+        StreamBuilder<UpdateStatus?>(
+          initialData: u.status,
+          stream: u.statusStream,
+          builder: (context, snapshot) => _info(snapshot.data != null),
+        ),
+      ],
+    );
   }
 }
 

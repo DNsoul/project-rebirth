@@ -6,5 +6,5 @@
 /// It grows with every release.
 library;
 
-const appVersion = '1.4.2';
-const appBuild = 10;
+const appVersion = '1.4.3';
+const appBuild = 11;

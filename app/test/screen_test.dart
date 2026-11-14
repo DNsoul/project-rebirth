@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:awg_client/core/controller.dart';
 import 'package:awg_client/core/updater.dart';
 import 'package:awg_client/ui/home_page.dart';
+import 'package:awg_client/ui/status_guide.dart';
 import 'package:awg_client/ui/theme.dart';
 import 'package:awg_proto/awg_proto.dart';
 import 'package:flutter/material.dart';
@@ -99,6 +100,8 @@ void windowOf(WidgetTester tester, Size size) {
 }
 
 void main() {
+  guideTests();
+
   const window = Size(324, 521);
 
   group('the screen', () {
@@ -522,5 +525,81 @@ void main() {
     expect(v.presses.last, 'connect');
     expect(find.byType(Text), findsNothing);
     await tester.pumpWidget(const SizedBox());
+  });
+}
+
+void guideTests() {
+  const window = Size(324, 521);
+  const info = ValueKey('status-guide-button');
+  const guide = ValueKey('status-guide');
+
+  group('the guide', () {
+    test('explains every phase, lost contact and coming back', () {
+      final phases = {for (final e in guideEntries) e.status.phase};
+      expect(phases, containsAll(Phase.values));
+      expect(guideEntries.any((e) => e.status.lostContact), isTrue);
+      expect(guideEntries.any((e) => e.status.recovering), isTrue);
+      expect(
+        guideEntries.any((e) => e.status.approvalCode.isNotEmpty),
+        isTrue,
+        reason: 'waiting for the owner',
+      );
+      expect(guideSteps.keys, containsAll(ConnectStep.values));
+    });
+
+    testWidgets('opens from the "i" and closes again', (tester) async {
+      windowOf(tester, window);
+      final view = StaticView(const AppStatus(Phase.idle));
+      await tester.pumpWidget(app(view));
+      expect(find.byKey(guide), findsNothing);
+
+      await tester.tap(find.byKey(info));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(guide), findsOneWidget);
+      expect(find.text('Что показывает кнопка'), findsOneWidget);
+      expect(view.presses, isEmpty, reason: 'the "i" is not the button');
+
+      for (final e in guideEntries) {
+        await tester.scrollUntilVisible(
+          find.text(e.title),
+          80,
+          scrollable: find.descendant(
+            of: find.byKey(guide),
+            matching: find.byType(Scrollable),
+          ),
+        );
+        expect(find.text(e.title), findsOneWidget);
+      }
+
+      await tester.tap(find.byKey(const ValueKey('status-guide-close')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(guide), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('the "i" stays clear of the strip with a new version', (
+      tester,
+    ) async {
+      windowOf(tester, window);
+      await tester.pumpWidget(
+        app(
+          StaticView(const AppStatus(Phase.idle)),
+          updates: FixedUpdates(update(UpdatePhase.available)),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      final line = tester.getRect(find.byKey(const ValueKey('update-banner')));
+      final i = tester.getRect(find.byKey(info));
+      expect(i.top, greaterThanOrEqualTo(line.bottom));
+      expect(i.right, lessThanOrEqualTo(window.width));
+
+      // And it is pressed, not the strip.
+      await tester.tap(find.byKey(info));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(guide), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    });
   });
 }

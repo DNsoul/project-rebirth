@@ -62,11 +62,18 @@ class _Shot {
     this.update,
     this.at = 1700,
     this.saveLogs,
+    this.guide = false,
+    this.guideScroll = 0,
   });
 
   final String name;
   final AppStatus status;
   final UpdateStatus? update;
+
+  /// When set, the "i" is pressed and the guide is shown, scrolled this far
+  /// (the button is then not long-pressed, whatever [saveLogs] is).
+  final bool guide;
+  final double guideScroll;
 
   /// When set, the button is long-pressed first, to show what the bar says
   /// about the saved journal.
@@ -262,6 +269,26 @@ void main() {
         AppStatus(Phase.connected, region: 'sto', since: since),
         saveLogs: () async => throw LogExportException(exportFailedMessage),
       ),
+      _Shot(
+        'g1-guide',
+        const AppStatus(Phase.idle),
+        guide: true,
+        saveLogs: () async => '',
+      ),
+      _Shot(
+        'g2-guide-middle',
+        const AppStatus(Phase.idle),
+        guide: true,
+        guideScroll: 400,
+        saveLogs: () async => '',
+      ),
+      _Shot(
+        'g3-guide-end',
+        const AppStatus(Phase.idle),
+        guide: true,
+        guideScroll: 3000,
+        saveLogs: () async => '',
+      ),
     ];
 
     Future<void> render(List<_Shot> list, Size size, String file) async {
@@ -299,8 +326,26 @@ void main() {
       // The journal saved by a long press: the bar says so for a few seconds.
       final buttons = find.byKey(const ValueKey('power-button'));
       for (var i = 0; i < list.length; i++) {
-        if (list[i].saveLogs != null) {
+        if (list[i].saveLogs != null && !list[i].guide) {
           await tester.longPress(buttons.at(i));
+        }
+      }
+      // The guide, opened from the "i".
+      final infos = find.byKey(const ValueKey('status-guide-button'));
+      for (var i = 0; i < list.length; i++) {
+        if (!list[i].guide) continue;
+        await tester.tap(infos.at(i));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        if (list[i].guideScroll > 0) {
+          await tester.drag(
+            find.descendant(
+              of: find.byKey(const ValueKey('status-guide')),
+              matching: find.byType(Scrollable),
+            ),
+            Offset(0, -list[i].guideScroll),
+          );
+          await tester.pump(const Duration(milliseconds: 300));
         }
       }
       // One moment for the whole sheet; the pictures that want another take it
@@ -366,6 +411,16 @@ void main() {
       [named('c3-log-denied')],
       const Size(360, 780),
       'phone-log-denied.png',
+    );
+    await render(
+      [named('g1-guide')],
+      const Size(360, 780),
+      'phone-guide.png',
+    );
+    await render(
+      [named('g3-guide-end')],
+      const Size(360, 780),
+      'phone-guide-end.png',
     );
     await render(
       [named('7d-refused')],
