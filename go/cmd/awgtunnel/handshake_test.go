@@ -67,11 +67,33 @@ func TestNewestHandshake(t *testing.T) {
 	}
 }
 
+// What "awgtunnel stats" reads and prints: the app parses the printed lines,
+// and with a tunnel that carries nothing, whether anything came back is the
+// question.
+func TestStatsAddUpEveryPeerAndPrintALineEach(t *testing.T) {
+	s, err := readStats(strings.NewReader(
+		"public_key=a\nlast_handshake_time_sec=100\nrx_bytes=10\ntx_bytes=7\n" +
+			"public_key=b\nlast_handshake_time_sec=300\nrx_bytes=5\ntx_bytes=0\nerrno=0\n\nrx_bytes=999\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s != (stats{handshake: 300, rx: 15, tx: 7}) {
+		t.Errorf("got %+v", s)
+	}
+	if got, want := s.String(), "handshake 300\nrx 15\ntx 7"; got != want {
+		t.Errorf("printed %q, want %q", got, want)
+	}
+	if _, err := readStats(strings.NewReader("errno=-22\n\n")); err == nil {
+		t.Error("an error from the tunnel should be an error")
+	}
+}
+
 func TestParseArgs(t *testing.T) {
 	good := map[string]command{
 		"install C:/x/awgr-a.conf":        {"install", "C:/x/awgr-a.conf"},
 		"uninstall awgr-a":                {"uninstall", "awgr-a"},
 		"handshake awgr-b":                {"handshake", "awgr-b"},
+		"stats awgr-a":                    {"stats", "awgr-a"},
 		"log C:/x":                        {"log", "C:/x"},
 		"/tunnelservice C:/x/awgr-a.conf": {"/tunnelservice", "C:/x/awgr-a.conf"},
 		"version":                         {name: "version"},

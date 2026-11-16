@@ -230,6 +230,37 @@ class ConnectionController implements ConnectionView, ReleaseSource {
   bool _networkAgain = false;
   bool _networkAvailable = true;
 
+  /// When the last change of network (or the health check's call for a repair)
+  /// arrived.
+  DateTime? _lastEventAt;
+
+  /// When the health check last looked.
+  DateTime? _lastHealthAt;
+
+  /// The health check has decided on a repair and is reading the settings
+  /// before it starts.
+  bool _healPending = false;
+
+  /// The tunnel the system's interface leads into, where a driver has only one
+  /// ([TunnelDriver.oneAtATime]): the one installed last.
+  String? _interfaceSlot;
+
+  /// The name of the operation that is running, if any.
+  String? _running;
+
+  /// A connection has been asked for and waits its turn.
+  bool _connectQueued = false;
+
+  /// A tunnel with no handshake for this long is taken to have lost the server.
+  /// WireGuard renews the handshake every two minutes while there is traffic,
+  /// and the keepalive makes sure there is: three minutes is one missed round.
+  static const _quietFor = Duration(minutes: 3);
+
+  /// How long a nudge after a change of network may take before the screen says
+  /// the connection is being brought back. One that works at once (most do, in a
+  /// fraction of a second) is not worth a flash of orange.
+  static const recoverGrace = Duration(seconds: 2);
+
   /// When the last network went, while none has come back.
   DateTime? _networkGoneAt;
 
@@ -351,6 +382,15 @@ class ConnectionController implements ConnectionView, ReleaseSource {
   Future<void> start() {
     final started = _exclusive('start', () async {
       await _restoreRelease(await _loadState());
+      // On Android this runs after the questions about permissions, and the
+      // window is up behind them: a connection made meanwhile is not something a
+      // previous run left behind, and a failure meanwhile stays on the screen. On
+      // the emulator a late answer from a settings page had this tear down a live
+      // tunnel (2026-11-16).
+      if (_status.phase != Phase.idle) {
+        _log('start: a connection was asked for first; nothing to clean up');
+        return;
+      }
       final problem = await tunnel.preflight();
       // Without the rights to run tunnels there is nothing this could have left
       // behind, and nothing it could clean up. And a cleanup that fails must not
@@ -385,7 +425,15 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         step: ConnectStep.settings,
       ),
     );
+    // A look for a new version does not hold the connection up: the connection
+    // reads the same files a moment later. At start-up that look ran first and,
+    // with the network not yet awake, kept a computer waiting 11 s (2026-11 logs).
+    _connectQueued = true;
+    if (_running == 'update check') {
+      _token.cancel();
+    }
     return _exclusive('connect', () async {
+      _connectQueued = false;
       if (_stopping) {
         return;
       }
@@ -500,6 +548,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
   // ------------------------------------------------------------------ timers
 
   void _startTimers() {
+    _lastHealthAt = null;
     if (!runTimers) {
       return;
     }
@@ -568,6 +617,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
       // there, or to stay where it is.
       _log('switch: cancelled');
       if (!_stopping) {
+        await _reattach(active);
         _emit(
           AppStatus(
             Phase.connected,
@@ -588,6 +638,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
       }
       // The old server is still there and still carrying the traffic.
       _log('switch failed: $e');
+      await _reattach(active);
       _retryNewServerAfter = _now().add(const Duration(minutes: 1));
       _emit(
         AppStatus(
@@ -613,18 +664,23 @@ class ConnectionController implements ConnectionView, ReleaseSource {
       return;
     }
 
+    // A look long after the one before means the phone was asleep, and so was
+    // the tunnel: no keepalives, no handshakes. Its last handshake is then as old
+    // as the sleep, which says nothing yet about whether it still works.
+    final checkedAt = _now();
+    final before = _lastHealthAt;
+    _lastHealthAt = checkedAt;
+    final woke =
+        before != null && checkedAt.difference(before) > healthEvery * 3;
+
     final DateTime? hs;
     try {
       hs = await tunnel.latestHandshake(active.slot);
     } catch (_) {
       return;
     }
-    // WireGuard renews the handshake every two minutes while there is traffic,
-    // and the keepalive makes sure there is. Three minutes is one missed round.
     final lost =
-        !_networkAvailable ||
-        hs == null ||
-        _now().difference(hs) > const Duration(minutes: 3);
+        !_networkAvailable || hs == null || _now().difference(hs) > _quietFor;
     // The server has not been heard from for minutes and the network is there:
     // whatever the cause, the tunnel is dead, and the way back is the one a
     // person takes (off and on). Not more than once a minute and a half, so a
@@ -641,11 +697,22 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         !_networkRunning &&
         (healed == null ||
             _now().difference(healed) > const Duration(seconds: 90));
+    // Claimed before anything is awaited: a second look that comes along while
+    // this one reads the settings must not start a repair of its own. On the
+    // user's phone two looks in a row each started one (2026-11 logs).
+    if (heal) {
+      _lastHeal = _now();
+      _healPending = true;
+    }
     // While the connection is being brought back, that work says how things
     // stand; otherwise this does. Coming back is shown as such, and "the server
-    // does not answer" only once nothing is being done about it.
-    if (!_networkRunning) {
-      _setContact(lost: lost, recovering: heal || _waitingForNetwork);
+    // does not answer" only once nothing is being done about it. A phone that has
+    // just woken is not told anything before its tunnel has had its chance.
+    if (!_networkRunning && !(woke && heal)) {
+      _setContact(
+        lost: lost,
+        recovering: heal || _healPending || _waitingForNetwork,
+      );
     }
     if (lost && _networkAvailable) {
       final last = _lastRefresh;
@@ -654,7 +721,27 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         await pollNow();
       }
       if (heal) {
-        _lastHeal = _now();
+        // Reading the settings went through the tunnel, and a tunnel that only
+        // needed waking has made its handshake on the way. On the user's phone
+        // half of the repairs came right after such a read had worked, and tore
+        // down a tunnel that had just proved itself (2026-11 logs). A tunnel
+        // that found a new server on the way has moved, and is fine too.
+        if (_stopping || !identical(_active, active)) {
+          _healPending = false;
+          return;
+        }
+        DateTime? again;
+        try {
+          again = await tunnel.latestHandshake(active.slot);
+        } catch (_) {
+          again = null;
+        }
+        _healPending = false;
+        if (again != null && _now().difference(again) <= _quietFor) {
+          _log('health: the tunnel answered after all');
+          _setContact(lost: false);
+          return;
+        }
         _log('health: no contact for minutes, bringing the tunnel up again');
         unawaited(_networkChanged(true));
       }
@@ -674,6 +761,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
   /// further pass, so a burst of them (Wi-Fi lost, mobile data found, Wi-Fi back)
   /// is answered by where things ended up and not by every step on the way.
   Future<void> _networkChanged(bool available) async {
+    _lastEventAt = _now();
     _networkAvailable = available;
     _networkGoneAt = available ? null : (_networkGoneAt ?? _now());
     if (_networkRunning) {
@@ -710,7 +798,6 @@ class ConnectionController implements ConnectionView, ReleaseSource {
 
     final since = _now();
     _log('network: changed, asking the tunnel to find the server again');
-    _setContact(lost: _status.lostContact, recovering: true);
     try {
       await tunnel.rebind(active.slot);
     } on Object catch (e) {
@@ -718,11 +805,15 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     }
 
     try {
+      // The nudge makes a handshake at once (on Android; on Windows the tunnel
+      // service finds the new path itself), so one made after the change is the
+      // answer. Coming back is shown only if that takes a moment.
       if (await _waitHandshakeAfter(
         active.slot,
         since,
         networkAnswerWithin,
         token,
+        onSlow: () => _setContact(lost: _status.lostContact, recovering: true),
       )) {
         _log('network: the server answered on the new path');
         _setContact(lost: false);
@@ -734,12 +825,22 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         'network: no answer in ${networkAnswerWithin.inSeconds} s, '
         'bringing the tunnel up again',
       );
+      await _logWhy(active.slot, null);
       _setContact(lost: true, recovering: true);
+      final rebuildFrom = _now();
       final next = await _bringUp(active.body, previous: active, token: token);
       _active = next;
       _emit(
         AppStatus(Phase.connected, region: next.body.region, since: next.since),
       );
+      // The tunnel just made has proved itself on the network as it is now, so
+      // the changes that came before it was begun need no pass of their own. On
+      // the user's phone that pass came 72 times, each time right after a
+      // working tunnel had been made (2026-11 logs).
+      final event = _lastEventAt;
+      if (event == null || !event.isAfter(rebuildFrom)) {
+        _networkAgain = false;
+      }
     } on Cancelled {
       _log('network: cancelled');
     } catch (e) {
@@ -750,9 +851,42 @@ class ConnectionController implements ConnectionView, ReleaseSource {
       // The old tunnel is still there. The next change of network, or the health
       // check, tries again; until then the server is not answering.
       _log('network: could not bring the tunnel up again: $e');
+      await _reattach(active);
       _setContact(lost: true);
     }
   });
+
+  /// Where opening a tunnel takes the interface from the one before (Android), a
+  /// replacement that failed leaves the old tunnel without one. It still talks to
+  /// its server, so the health check sees its handshakes and says "connected",
+  /// and nothing on the phone goes through it: on the user's phone that lasted an
+  /// hour (2026-11-16 logs). It is put back on an interface of its own, made the
+  /// way it was made the first time.
+  Future<void> _reattach(_Active active) async {
+    if (!tunnel.oneAtATime || _stopping || _interfaceSlot == active.slot) {
+      return;
+    }
+    try {
+      final identity = await _identity();
+      await _install(
+        active.slot,
+        renderClientConf(
+          body: active.body,
+          privateKey: identity.privateKey,
+          address: active.address,
+        ),
+      );
+      _log('${active.slot} has the interface again');
+    } on Object catch (e) {
+      _log('could not give ${active.slot} the interface again: $e');
+    }
+  }
+
+  /// Installs a tunnel, keeping track of which one the interface leads into.
+  Future<void> _install(String slot, String conf) async {
+    await tunnel.install(name: slot, conf: conf);
+    _interfaceSlot = slot;
+  }
 
   /// Whether the server has said this device may not come in: the owner closed
   /// its access, or the server no longer knows it and wants the owner's word.
@@ -792,14 +926,18 @@ class ConnectionController implements ConnectionView, ReleaseSource {
   }
 
   /// Waits for a handshake made at or after [since]. The library reports whole
-  /// seconds, so one from the second before counts too.
+  /// seconds, so one from the second before counts too. [onSlow] is called once
+  /// if none has come within [recoverGrace].
   Future<bool> _waitHandshakeAfter(
     String slot,
     DateTime since,
     Duration within,
-    CancelToken token,
-  ) async {
-    final deadline = _now().add(within);
+    CancelToken token, {
+    void Function()? onSlow,
+  }) async {
+    final start = _now();
+    final deadline = start.add(within);
+    var told = onSlow == null;
     while (true) {
       token.check();
       final hs = await tunnel.latestHandshake(slot);
@@ -808,6 +946,10 @@ class ConnectionController implements ConnectionView, ReleaseSource {
       }
       if (!_now().isBefore(deadline)) {
         return false;
+      }
+      if (!told && !_now().isBefore(start.add(recoverGrace))) {
+        told = true;
+        onSlow!();
       }
       await token.guard(_sleep(const Duration(milliseconds: 300)));
     }
@@ -1023,16 +1165,21 @@ class ConnectionController implements ConnectionView, ReleaseSource {
 
   /// Looks in the gist for an announcement of a new version, whether or not a
   /// connection is up. The configuration read on the way is kept like any other.
+  ///
+  /// A connection asked for meanwhile goes first: it reads the same files.
   Future<void> checkForUpdate() => _exclusive('update check', () async {
-    if (_stopping) {
+    if (_stopping || _connectQueued) {
       return;
     }
+    final token = _token;
     final state = await _loadState();
     try {
-      final snapshot = await gist.fetch(etag: state.etag);
+      final snapshot = await token.guard(gist.fetch(etag: state.etag));
       if (snapshot != null) {
         await _acceptAll(snapshot, state);
       }
+    } on Cancelled {
+      _log('update check: called off');
     } on GistException catch (e) {
       _log('update check: ${e.message}');
     }
@@ -1075,7 +1222,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
       try {
         token.check();
         say('Поднимаю туннель…', ConnectStep.tunnel);
-        await tunnel.install(name: slot, conf: conf);
+        await _install(slot, conf);
         token.check();
 
         say('Жду ответа сервера…', ConnectStep.server);
@@ -1083,6 +1230,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
           _log(
             'no handshake with ${body.endpoint} within ${handshakeWithin.inSeconds}s',
           );
+          await _logWhy(slot, resolver);
           say('Убираю туннель, который не заработал…');
           await tunnel.uninstall(slot);
           return false;
@@ -1095,6 +1243,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
             probe.resolverAnswers(resolver, answerWithin),
           )) {
             _log('the tunnel is up but $resolver does not answer through it');
+            await _logWhy(slot, resolver, probed: true);
             say('Убираю туннель, который не заработал…');
             await tunnel.uninstall(slot);
             return false;
@@ -1150,9 +1299,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         const Duration(seconds: 25),
         const Duration(seconds: 10),
       )) {
-        throw ConnectException(
-          'Сервер принял регистрацию, но не отвечает. Возможно, его уже заменили: повторите через минуту.',
-        );
+        throw ConnectException(await _registeredButSilent(body, token));
       }
       address = registered;
     }
@@ -1185,6 +1332,63 @@ class ConnectionController implements ConnectionView, ReleaseSource {
       ..lastAddress = address;
     await store.save(state);
     return _Active(slot: slot, body: body, address: address, since: _now());
+  }
+
+  /// Writes down what can be told about a tunnel that carries nothing: what the
+  /// check went through, what the tunnel received and sent, which way the system
+  /// sends the resolver's traffic. The journal of a computer where this went on
+  /// for forty minutes (2026-11-12) could not tell a dead server from a program in
+  /// the way on the computer itself.
+  Future<void> _logWhy(
+    String slot,
+    String? resolver, {
+    bool probed = false,
+  }) async {
+    final parts = <String>[
+      if (probed && probe.lastReport.isNotEmpty) probe.lastReport,
+    ];
+    try {
+      final d = await tunnel.diagnose(slot, resolver ?? '');
+      if (d.isNotEmpty) {
+        parts.add(d);
+      }
+    } on Object {
+      // Nothing to add.
+    }
+    if (parts.isNotEmpty) {
+      _log('$slot: ${parts.join('; ')}');
+    }
+  }
+
+  /// What to say when the server took the registration and the tunnel still
+  /// carries nothing. It used to guess that the server had been replaced; on the
+  /// computer where it said so, the server was in its place and healthy
+  /// (2026-11-12). The published configuration is read again to know.
+  Future<String> _registeredButSilent(
+    ConfigBody body,
+    CancelToken token,
+  ) async {
+    ConfigBody? now;
+    try {
+      final snapshot = await token.guard(gist.fetch());
+      if (snapshot != null) {
+        now = await _acceptAll(snapshot, await _loadState());
+      }
+    } on Cancelled {
+      rethrow;
+    } on Object catch (e) {
+      _log('could not read the configuration again: $e');
+    }
+    if (now == null) {
+      return 'Сервер принял устройство, но трафик через туннель не идёт. '
+          'Повторите через минуту; если не поможет, выключите другие VPN и прокси.';
+    }
+    if (_isDifferentServer(now, body)) {
+      _log('the server was replaced meanwhile: ${now.region} ${now.endpoint}');
+      return 'Этот сервер только что заменили. Нажмите ещё раз, чтобы подключиться к новому.';
+    }
+    return 'Сервер на месте и принял устройство, но трафик через туннель не идёт. '
+        'Если включён другой VPN или прокси, выключите его и повторите.';
   }
 
   /// The resolver that decides which sites go through the tunnel hands out
@@ -1246,7 +1450,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
       token.check();
       // The same words as just before: only the stage moves on, to the tunnel.
       say('Регистрирую это устройство…', ConnectStep.tunnel);
-      await tunnel.install(name: enrollSlot, conf: conf);
+      await _install(enrollSlot, conf);
       token.check();
       // A service that is running is not yet a tunnel that carries anything: the
       // adapter still has to get its address and its route. The handshake is the
@@ -1367,6 +1571,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
   /// The two are independent and each takes a moment, so they go side by side;
   /// a failure in one does not stop the other.
   Future<void> _teardownQuietly() async {
+    _interfaceSlot = null;
     await Future.wait([
       _quiet(() async {
         for (final name in await _ourTunnels()) {
@@ -1385,12 +1590,14 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     final done = Completer<T>();
     _lock = _lock.then((_) async {
       _token = CancelToken();
+      _running = name;
       final sw = Stopwatch()..start();
       try {
         done.complete(await body());
       } catch (e, s) {
         done.completeError(e, s);
       }
+      _running = null;
       _log('$name: ${sw.elapsedMilliseconds} ms');
     });
     return done.future;

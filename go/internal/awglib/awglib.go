@@ -268,24 +268,36 @@ func (t *Tunnel) Close() {
 	}
 }
 
-// How hard Rebind tries to open the sockets again: the system may take a moment
-// to hand out the port the old ones had.
+// How hard Rebind tries to open new sockets. With the system choosing the port
+// there is nothing to wait for; this is only for a system that refuses once.
 const (
-	rebindTries = 10
-	rebindPause = 500 * time.Millisecond
+	rebindTries = 3
+	rebindPause = 200 * time.Millisecond
 )
 
 // ErrClosed is what Rebind says about a tunnel that has been closed.
 var ErrClosed = errors.New("the tunnel is closed")
 
 // Rebind is for the moment the phone changes networks (Wi-Fi to mobile data and
-// back). It opens the client's UDP sockets afresh and asks the server for a new
-// handshake at once.
+// back), and for a tunnel that has gone quiet. It moves the client to new UDP
+// sockets on a new port and makes a handshake from them at once.
 //
 // Without it the tunnel waits for its own timers. Those can take a minute or
 // more to notice that the path is new, and after a minute and a half of failed
 // attempts they stop trying until something else is sent. A person sees that
 // as a connection that does not come back until it is switched off and on.
+//
+// A new port, because the old one can be what is stuck. On the user's phone a
+// tunnel that had stopped carrying anything stayed silent when nudged on its old
+// port, while a new tunnel, which had a new port, answered within a second
+// (2026-11 logs): somewhere on the way a flow can stop being let through while a
+// new one is.
+//
+// At once, because the library on its own will not. It sends no handshake within
+// five seconds of the last one, and none for two minutes while it trusts its
+// session; and its clocks stop while the phone sleeps, so after a night it may
+// trust a session the server dropped long ago. The keys are let go first, so the
+// handshake goes out now and whatever is sent meanwhile waits for it.
 //
 // The new sockets have new descriptors (see SocketFDs); where the system has to
 // be told to keep them out of the tunnel, that has to be done again.
@@ -297,7 +309,8 @@ func (t *Tunnel) Rebind() error {
 	}
 	var err error
 	for i := 0; i < rebindTries; i++ {
-		if err = t.dev.BindUpdate(); err == nil {
+		// Port 0: the system picks a free one, which is never the old one.
+		if err = t.dev.IpcSet("listen_port=0\n"); err == nil {
 			break
 		}
 		time.Sleep(rebindPause)
@@ -305,10 +318,8 @@ func (t *Tunnel) Rebind() error {
 	if err != nil {
 		return fmt.Errorf("open the sockets again: %w", err)
 	}
-	// A handshake that was sent a moment ago is not repeated (the library keeps
-	// its own pace), but one that is overdue goes out now, and the count of
-	// failed attempts starts again.
 	if p := t.dev.LookupPeer(t.peer); p != nil {
+		p.ExpireCurrentKeypairs()
 		_ = p.SendHandshakeInitiation(false)
 	}
 	return nil
@@ -327,6 +338,37 @@ func (t *Tunnel) LatestHandshake() (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return parseHandshake(out)
+}
+
+// Traffic is how many bytes the client has received from the server and sent
+// to it. When a tunnel carries nothing, it tells whether anything came back at
+// all.
+func (t *Tunnel) Traffic() (rx, tx uint64, ok bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.dev == nil {
+		return 0, 0, false
+	}
+	out, err := t.dev.IpcGet()
+	if err != nil {
+		return 0, 0, false
+	}
+	rx, tx = parseTraffic(out)
+	return rx, tx, true
+}
+
+func parseTraffic(uapi string) (rx, tx uint64) {
+	for _, line := range strings.Split(uapi, "\n") {
+		line = strings.TrimSpace(line)
+		if v, ok := strings.CutPrefix(line, "rx_bytes="); ok {
+			n, _ := strconv.ParseUint(v, 10, 64)
+			rx += n
+		} else if v, ok := strings.CutPrefix(line, "tx_bytes="); ok {
+			n, _ := strconv.ParseUint(v, 10, 64)
+			tx += n
+		}
+	}
+	return rx, tx
 }
 
 func parseHandshake(uapi string) (time.Time, bool) {

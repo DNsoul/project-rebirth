@@ -318,6 +318,53 @@ void main() {
       },
     );
 
+    test(
+      'takes an answer that comes after the next question has gone out',
+      () async {
+        final sockets = <FakeSocket>[];
+        List<int>? firstQuery;
+        final probe = UdpDnsProbe(
+          bind: () async {
+            final s = FakeSocket(
+              onSend: (self, data) => firstQuery ??= List<int>.of(data),
+            );
+            sockets.add(s);
+            return s;
+          },
+        );
+        final answering = probe.resolverAnswers(
+          '198.18.0.1',
+          const Duration(seconds: 5),
+        );
+        // The answer to the first question, once the second has been asked.
+        while (sockets.length < 2) {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+        sockets.first.deliverBytes(answerTo(firstQuery!));
+        expect(await answering, isTrue);
+        expect(probe.lastReport, isEmpty);
+        expect(sockets.every((s) => s.closed), isTrue);
+      },
+    );
+
+    test('says what it went through when nothing answers', () async {
+      final probe = UdpDnsProbe(
+        bind: () async => FakeSocket(
+          onSend: (self, data) => self.failNextReceive(hostUnreachable()),
+        ),
+      );
+      expect(
+        await probe.resolverAnswers(
+          '198.18.0.1',
+          const Duration(milliseconds: 2500),
+        ),
+        isFalse,
+      );
+      expect(probe.lastReport, contains('asked 3 times'));
+      expect(probe.lastReport, contains('3 socket errors'));
+      expect(probe.lastReport, contains('error 1232'));
+    });
+
     test('closes every socket it opened', () async {
       final sockets = <FakeSocket>[];
       final probe = UdpDnsProbe(

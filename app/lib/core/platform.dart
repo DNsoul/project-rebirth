@@ -34,6 +34,13 @@ abstract class TunnelDriver {
   /// tunnel of the same name.
   Future<void> install({required String name, required String conf});
 
+  /// Whether installing a tunnel takes the way into the tunnels away from the
+  /// others. On Android an app has one VPN interface, and opening one closes the
+  /// one before: a tunnel that was running goes on talking to its server, but
+  /// nothing on the phone reaches it any more. On Windows every tunnel has an
+  /// adapter of its own.
+  bool get oneAtATime;
+
   /// Stops and removes the tunnel. Harmless if there is none.
   Future<void> uninstall(String name);
 
@@ -50,7 +57,23 @@ abstract class TunnelDriver {
   /// rather than leaving it to its own timers. Harmless if there is no such
   /// tunnel, and a no-op where the system's own client already does this.
   Future<void> rebind(String name);
+
+  /// What can be told about why the tunnel [name] carries nothing, in words for
+  /// the journal: what it has received and sent, and, where the system can say,
+  /// which way it sends traffic for [address]. Empty when nothing can be told.
+  /// Asked only after something failed, so it may take a moment; never throws.
+  Future<String> diagnose(String name, String address);
 }
+
+/// Bytes received and sent, in words for the journal.
+String describeTraffic(int received, int sent) =>
+    'received ${_bytes(received)}, sent ${_bytes(sent)}';
+
+String _bytes(int n) => n < 10 * 1024
+    ? '$n B'
+    : n < 10 * 1024 * 1024
+    ? '${n ~/ 1024} KB'
+    : '${n ~/ (1024 * 1024)} MB';
 
 /// Makes the machine ask the server's resolver, and only it, for names. Without
 /// this, the system also asks whatever resolver the ordinary connection offers,
@@ -69,6 +92,11 @@ abstract class DataPathProbe {
   /// [within] for an answer. A handshake alone proves less than it seems to:
   /// see the implementation for why.
   Future<bool> resolverAnswers(String server, Duration within);
+
+  /// After a check that got no answer: what it went through (how many times it
+  /// asked, what the sockets said), in words for the journal. Empty after an
+  /// answer.
+  String get lastReport;
 }
 
 /// Something that identifies this installation of the system and does not

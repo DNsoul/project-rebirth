@@ -195,6 +195,61 @@ void main() {
       expect(lossy.status.phase, Phase.connected, reason: lossy.status.message);
       expect(made, 1);
     });
+
+    // A computer saw "maybe it has already been replaced" for forty minutes while
+    // the server was in its place and healthy (2026-11-12 logs).
+    test('a server that took the device but carries nothing is said to be in '
+        'its place, and why is written down', () async {
+      rig.probe.answers = false;
+      await rig.controller.connect();
+
+      expect(rig.status.phase, Phase.failed);
+      expect(rig.status.message, contains('Сервер на месте'));
+      expect(rig.status.message, contains('другой VPN'));
+      expect(
+        rig.logs,
+        contains('awgr-a: asked 8 times, no answer; received 0 B, sent 1 KB'),
+      );
+      expect(rig.tunnel.diagnosed, contains('awgr-a 198.18.0.1'));
+      expect(rig.tunnels, isEmpty);
+    });
+
+    test(
+      'a server that was replaced meanwhile is said to be replaced',
+      () async {
+        rig.probe.answers = false;
+        final waw = rig.fleet.add('198.51.100.7:51820', 31, region: 'waw');
+        final replacement = await sealedConfig(
+          bodyJson(endpoint: waw.endpoint, serverByte: 31, region: 'waw'),
+          seq: 50,
+          at: rig.clock.now(),
+        );
+        var reads = 0;
+        rig.gist.onFetch = () {
+          if (++reads == 2) rig.gist.publish(config: replacement);
+        };
+
+        await rig.controller.connect();
+
+        expect(rig.status.phase, Phase.failed);
+        expect(rig.status.message, contains('только что заменили'));
+      },
+    );
+
+    test('with the configuration unreadable it does not guess', () async {
+      rig.probe.answers = false;
+      var reads = 0;
+      rig.gist.onFetch = () {
+        if (++reads == 2) rig.gist.down = true;
+      };
+
+      await rig.controller.connect();
+
+      expect(rig.status.phase, Phase.failed);
+      expect(rig.status.message, contains('выключите другие VPN'));
+      expect(rig.status.message, isNot(contains('заменили')));
+      expect(rig.status.message, isNot(contains('на месте')));
+    });
   });
 
   group('reconnecting', () {
@@ -787,6 +842,65 @@ void main() {
       await c.start(); // must not throw: the app would not open at all
       expect(c.status.phase, Phase.idle);
     });
+
+    // On Android the start-up runs after the questions about permissions, and
+    // the window is up behind them: a person can connect first. On the emulator
+    // the answer from the settings page came six minutes late, and the start-up
+    // then took the live tunnel for a leftover (2026-11-16).
+    test('a connection made before the start-up ran is not cleaned up as a '
+        'leftover', () async {
+      await rig.controller.connect();
+      rig.tunnel.log.clear();
+
+      await rig.controller.start();
+
+      expect(rig.status.phase, Phase.connected);
+      expect(rig.tunnels, ['awgr-a']);
+      expect(rig.tunnel.log, isEmpty);
+      expect(rig.dns.enabledFor, '198.18.0.1');
+    });
+
+    test(
+      'a failure from before the start-up ran stays on the screen',
+      () async {
+        sto.alive = false;
+        await rig.controller.connect();
+        final message = rig.status.message;
+
+        await rig.controller.start();
+
+        expect(rig.status.phase, Phase.failed);
+        expect(rig.status.message, message);
+      },
+    );
+
+    // At start-up the look for a new version runs first. On a computer whose
+    // network was not yet awake it took 11 s, and the connection made with the
+    // system waited all that time (2026-11 logs).
+    test('a connection does not wait for a look for a new version that is '
+        'still waiting on the network', () async {
+      final gate = rig.gist.fetchGate = Completer<void>();
+      unawaited(rig.controller.checkForUpdate());
+      await pumpUntil(() => rig.gist.fetchWaiting, 'the look for a version');
+
+      final connecting = rig.controller.connect();
+      await pumpUntil(
+        () => rig.logs.contains('update check: called off'),
+        'the look given up for the connection',
+      );
+      gate.complete();
+      await connecting;
+      expect(rig.status.phase, Phase.connected, reason: rig.status.message);
+    });
+
+    test('a look for a new version that has not started yet is skipped for a '
+        'connection, which reads the same files', () async {
+      final before = rig.gist.fetches;
+      unawaited(rig.controller.checkForUpdate());
+      await rig.controller.connect();
+      expect(rig.status.phase, Phase.connected);
+      expect(rig.gist.fetches - before, 1);
+    });
   });
 
   group('hearing about a new version', () {
@@ -1071,6 +1185,11 @@ void main() {
         expect(rig.status.phase, Phase.connected);
         expect(rig.status.lostContact, isTrue);
         expect(rig.status.recovering, isFalse);
+        expect(
+          rig.logs.any((l) => l.contains('has the interface again')),
+          isFalse,
+          reason: 'on Windows the new tunnel never took the old one\'s adapter',
+        );
       },
     );
 
@@ -1218,6 +1337,201 @@ void main() {
         expect(rig.tunnels, ['awgr-a'], reason: 'the next try, in due time');
       },
     );
+  });
+
+  // What the user's main phone did all week (vivo, Android 16, 2026-11 logs): a
+  // tunnel left without its interface while the screen said "connected", repairs
+  // of tunnels that had just proved themselves, and a second repair right after
+  // each one. The tunnel here makes handshakes the way the real library does.
+  group('on a phone', () {
+    late StreamController<bool> net;
+
+    Future<void> settle() async {
+      for (var i = 0; i < 400; i++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+    }
+
+    int rebinds() => rig.tunnel.log.where((l) => l.startsWith('rebind')).length;
+    int installs(String name) =>
+        rig.tunnel.log.where((l) => l == 'install $name').length;
+
+    setUp(() async {
+      net = StreamController<bool>.broadcast();
+      rig = await Rig.create(networkChanges: net.stream);
+      sto = rig.fleet.add('203.0.113.9:41820', 11, region: 'sto');
+      await rig.publish(sto);
+      rig.tunnel
+        ..oneAtATime = true
+        ..paced = true;
+      // On a phone a look at the settings goes through the tunnel.
+      rig.gist.onFetch = rig.tunnel.traffic;
+    });
+
+    tearDown(() => net.close());
+
+    test('a repair that fails gives the old tunnel its interface back, '
+        'so that what the screen says is true', () async {
+      await rig.controller.connect();
+      rig.clock.advance(const Duration(minutes: 1));
+      // The path is gone for good: no nudge, no new tunnel, no registration helps.
+      sto.alive = false;
+
+      net.add(true);
+      await settle();
+
+      expect(rig.status.lostContact, isTrue);
+      expect(rig.tunnels, ['awgr-a']);
+      expect(
+        rig.tunnel.interfaceOwner,
+        'awgr-a',
+        reason:
+            'the failed attempts each took the interface; the tunnel that is '
+            'kept must have it back, or the phone\'s traffic goes around it',
+      );
+
+      // Once the server is back, the kept tunnel carries traffic again.
+      sto.alive = true;
+      expect(rig.tunnel.carries('awgr-a'), isTrue);
+    });
+
+    test('a move that fails gives the old tunnel its interface back', () async {
+      await rig.controller.connect();
+      final waw = rig.fleet.add('198.51.100.7:51820', 31, region: 'waw')
+        ..alive = false;
+      await rig.publish(waw);
+
+      await rig.controller.pollNow();
+
+      expect(rig.status.region, 'sto');
+      expect(rig.status.note, contains('остаёмся на прежнем'));
+      expect(rig.tunnels, ['awgr-a']);
+      expect(rig.tunnel.interfaceOwner, 'awgr-a');
+      expect(rig.tunnel.carries('awgr-a'), isTrue);
+    });
+
+    test(
+      'a tunnel that only needed waking is left alone, and nothing is shown',
+      () async {
+        await rig.controller.connect();
+        await rig.controller
+            .checkHealthNow(); // the look before the phone slept
+        rig.clock.advance(const Duration(minutes: 14)); // asleep: no handshakes
+        rig.tunnel.log.clear();
+        final seen = <AppStatus>[];
+        final sub = rig.controller.statusStream.listen(seen.add);
+
+        await rig.controller.checkHealthNow();
+        await settle();
+        await sub.cancel();
+
+        expect(
+          rig.tunnel.log,
+          isEmpty,
+          reason:
+              'reading the settings woke the tunnel: no nudge, no new tunnel',
+        );
+        expect(seen.where((s) => s.lostContact || s.recovering), isEmpty);
+        expect(rig.logs, contains('health: the tunnel answered after all'));
+      },
+    );
+
+    test('a tunnel that really stalled is repaired once, even when two looks '
+        'come in a row, and a nudge onto a new port is enough', () async {
+      await rig.controller.connect();
+      rig.tunnel.stuck.add('awgr-a');
+      rig.clock.advance(const Duration(minutes: 4));
+
+      await Future.wait([
+        rig.controller.checkHealthNow(),
+        rig.controller.checkHealthNow(),
+      ]);
+      await settle();
+
+      expect(rebinds(), 1, reason: 'one repair, not one per look');
+      expect(rig.tunnels, ['awgr-a'], reason: 'no new tunnel was needed');
+      expect(rig.tunnel.carries('awgr-a'), isTrue);
+      expect(rig.status.lostContact, isFalse);
+      expect(rig.status.recovering, isFalse);
+    });
+
+    test('while one look repairs, another does not take "coming back" off the '
+        'screen', () async {
+      await rig.controller.connect();
+      rig.tunnel.stuck.add('awgr-a');
+      rig.clock.advance(const Duration(minutes: 4));
+      final gate = rig.gist.fetchGate = Completer<void>();
+
+      final first = rig.controller.checkHealthNow();
+      await pumpUntil(() => rig.gist.fetchWaiting, 'the first look reads');
+      final second = rig.controller.checkHealthNow();
+      await Future<void>.delayed(Duration.zero);
+      expect(rig.status.lostContact, isTrue);
+      expect(rig.status.recovering, isTrue);
+
+      gate.complete();
+      await Future.wait([first, second]);
+      await settle();
+      expect(rig.status.lostContact, isFalse);
+    });
+
+    test(
+      'changes that came before a new tunnel was made get no second pass',
+      () async {
+        // Windows-like: the nudge makes no handshake, so the tunnel is made anew.
+        rig.tunnel
+          ..oneAtATime = false
+          ..nudgeHandshakes = false;
+        await rig.controller.connect();
+        rig.clock.advance(const Duration(minutes: 1));
+
+        net.add(true);
+        net.add(true); // arrives while the first is being dealt with
+        await settle();
+
+        expect(rebinds(), 1);
+        expect(installs('awgr-b'), 1);
+        expect(rig.tunnels, ['awgr-b']);
+        expect(rig.status.lostContact, isFalse);
+      },
+    );
+
+    test('a change that comes while a new tunnel is being made still gets its '
+        'pass', () async {
+      rig.tunnel
+        ..oneAtATime = false
+        ..nudgeHandshakes = false;
+      await rig.controller.connect();
+      rig.clock.advance(const Duration(minutes: 1));
+      rig.tunnel.installGate = Completer<void>();
+
+      net.add(true);
+      await pumpUntil(() => rig.tunnel.installWaiting, 'the new tunnel');
+      rig.clock.advance(const Duration(seconds: 1));
+      net.add(true); // Wi-Fi gone again while the new tunnel was being made
+      rig.tunnel.installGate!.complete();
+      rig.tunnel.installGate = null;
+      await settle();
+
+      expect(rebinds(), 2);
+    });
+
+    test('a nudge that is answered at once shows nothing', () async {
+      await rig.controller.connect();
+      rig.clock.advance(const Duration(minutes: 1));
+      final seen = <AppStatus>[];
+      final sub = rig.controller.statusStream.listen(seen.add);
+
+      net.add(true);
+      await settle();
+      await sub.cancel();
+
+      expect(
+        rig.logs.any((l) => l.contains('answered on the new path')),
+        isTrue,
+      );
+      expect(seen.where((s) => s.recovering || s.lostContact), isEmpty);
+    });
   });
 
   group('when the owner approves devices', () {

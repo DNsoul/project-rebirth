@@ -392,6 +392,59 @@ void main() {
         expect(await driver.latestHandshake('awgr-a'), isNull);
       },
     );
+
+    test('says what a tunnel that carries nothing received and sent, and '
+        'which way Windows sends the resolver\'s traffic', () async {
+      calls.answer = (exe, args) => exe.endsWith('awgtunnel.exe')
+          ? ok('handshake 1794040024\r\nrx 0\r\ntx 1480\r\n')
+          : exe == 'powershell.exe'
+          ? ok('route 198.18.0.0/16 Clash Verge\r\n')
+          : null;
+      expect(
+        await driver.diagnose('awgr-a', '198.18.0.1'),
+        'received 0 B, sent 1480 B, '
+        'Windows sends 198.18.0.1 to Clash Verge (198.18.0.0/16)',
+      );
+      expect(calls.of('awgtunnel.exe').single, ['stats', 'awgr-a']);
+      expect(calls.of('powershell.exe').single.last, contains("'198.18.0.1'"));
+    });
+
+    test('says nothing it cannot tell, and asks nothing for an address that '
+        'is not one', () async {
+      calls.answer = (exe, args) =>
+          exe.endsWith('awgtunnel.exe') ? fail(1) : ok('');
+      expect(await driver.diagnose('awgr-a', '198.18.0.1'), isEmpty);
+      expect(
+        await driver.diagnose('awgr-a', "1.1.1.1'; Remove-Item x"),
+        isEmpty,
+      );
+      expect(await driver.diagnose('awgr-a', ''), isEmpty);
+      expect(calls.of('powershell.exe'), hasLength(1));
+    });
+  });
+
+  group('the tunnel\'s own numbers', () {
+    test('are read line by line', () {
+      expect(parseTunnelStats('handshake 5\r\nrx 10\r\ntx 7\r\n'), (
+        handshake: 5,
+        rx: 10,
+        tx: 7,
+      ));
+      expect(
+        parseTunnelStats('5\r\n'),
+        isNull,
+        reason: 'the old handshake form',
+      );
+      expect(parseTunnelStats(''), isNull);
+    });
+
+    test('the route line keeps an adapter name with spaces', () {
+      expect(parseRouteLine('noise\r\nroute 198.18.0.0/15 Ethernet 2\r\n'), (
+        prefix: '198.18.0.0/15',
+        adapter: 'Ethernet 2',
+      ));
+      expect(parseRouteLine(''), isNull);
+    });
   });
 
   group('reading what the system prints', () {

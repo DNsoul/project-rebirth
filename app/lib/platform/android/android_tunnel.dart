@@ -50,15 +50,23 @@ class AndroidTunnelDriver implements TunnelDriver {
         : 'Нужно разрешение на VPN. Нажмите кнопку ещё раз и согласитесь в окне Android.';
   }
 
+  /// The system gives an app one VPN interface; opening one closes the one before.
+  @override
+  bool get oneAtATime => true;
+
   @override
   Future<void> install({required String name, required String conf}) async {
     _checkName(name);
     final plan = planFromConf(conf);
 
     // A tunnel of the same name is stopped first: it would otherwise go on
-    // holding a descriptor to an interface that is about to be replaced.
-    if (_handles.containsKey(name)) {
-      await uninstall(name);
+    // holding a descriptor to an interface that is about to be replaced. The
+    // service stays: an interface is opened again at once, and letting the
+    // service go in between would take the key off the status bar for a moment.
+    final same = _handles.remove(name);
+    if (same != null) {
+      native.turnOff(same);
+      log?.call('tunnel $name is down');
     }
 
     // When this driver has no tunnel of its own, whatever the library is still
@@ -84,6 +92,7 @@ class AndroidTunnelDriver implements TunnelDriver {
         mtu: plan.mtu,
       );
     } on Object catch (e) {
+      if (_handles.isEmpty) await bridge.release();
       throw TunnelException(
         'Android не открыл VPN-интерфейс. Повторите; если не помогает, отключите другие VPN. ($e)',
       );
@@ -140,6 +149,20 @@ class AndroidTunnelDriver implements TunnelDriver {
     // The sockets are new, and the system has to be told about them again.
     await _keepSocketsOutOfTheTunnel(handle);
     log?.call('tunnel $name: sockets reopened for the new network');
+  }
+
+  /// What the library counts. Where the phone sends traffic is not in question
+  /// here: the interface leads into whichever tunnel opened it last.
+  @override
+  Future<String> diagnose(String name, String address) async {
+    final handle = _handles[name];
+    if (handle == null) return '';
+    try {
+      final t = native.traffic(handle);
+      return t == null ? '' : describeTraffic(t.rx, t.tx);
+    } on Object {
+      return '';
+    }
   }
 
   @override

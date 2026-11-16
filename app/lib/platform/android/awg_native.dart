@@ -34,7 +34,19 @@ abstract class AwgNative {
   int socketV4(int handle);
   int socketV6(int handle);
 
+  /// Bytes received from the server and sent to it, or null for a handle that is
+  /// not running (or a library too old to say).
+  ({int rx, int tx})? traffic(int handle);
+
   String lastError();
+}
+
+/// The library's "rx tx". Null when it is not that.
+({int rx, int tx})? parseTraffic(String text) {
+  final parts = text.trim().split(' ');
+  if (parts.length != 2) return null;
+  final rx = int.tryParse(parts[0]), tx = int.tryParse(parts[1]);
+  return rx == null || tx == null ? null : (rx: rx, tx: tx);
 }
 
 /// The real thing: calls into libawg.so, which sits next to the app's own
@@ -78,6 +90,16 @@ class FfiAwgNative implements AwgNative {
           Void Function(Pointer<Utf8>),
           void Function(Pointer<Utf8>)
         >('awgFree');
+    // Only for the journal: a library without it still runs tunnels.
+    try {
+      _traffic = _lib
+          .lookupFunction<
+            Pointer<Utf8> Function(Int32),
+            Pointer<Utf8> Function(int)
+          >('awgTraffic');
+    } on ArgumentError {
+      _traffic = null;
+    }
   }
 
   final DynamicLibrary _lib;
@@ -91,6 +113,7 @@ class FfiAwgNative implements AwgNative {
   late final Pointer<Utf8> Function() _lastError;
   late final Pointer<Utf8> Function() _version;
   late final void Function(Pointer<Utf8>) _free;
+  late final Pointer<Utf8> Function(int)? _traffic;
 
   /// Text the library returned, copied and released.
   String _take(Pointer<Utf8> p) {
@@ -131,6 +154,15 @@ class FfiAwgNative implements AwgNative {
 
   @override
   int socketV6(int handle) => _socket6(handle);
+
+  @override
+  ({int rx, int tx})? traffic(int handle) {
+    final f = _traffic;
+    if (f == null) return null;
+    final p = f(handle);
+    if (p == nullptr) return null;
+    return parseTraffic(_take(p));
+  }
 
   @override
   String lastError() => _take(_lastError());

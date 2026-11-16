@@ -83,6 +83,12 @@ class FakeNative implements AwgNative {
   @override
   int socketV6(int handle) => sockets[handle]?[1] ?? -1;
 
+  /// What each handle has received and sent.
+  final traffics = <int, ({int rx, int tx})>{};
+
+  @override
+  ({int rx, int tx})? traffic(int handle) => traffics[handle];
+
   @override
   String lastError() => error;
 }
@@ -398,6 +404,25 @@ void main() {
       },
     );
 
+    test('says what a tunnel received and sent, and nothing for one that is '
+        'not there', () async {
+      await driver.install(name: 'awgr-a', conf: mainConf);
+      native.traffics[1] = (rx: 0, tx: 2048);
+      expect(
+        await driver.diagnose('awgr-a', '198.18.0.1'),
+        'received 0 B, sent 2048 B',
+      );
+      expect(await driver.diagnose('awgr-b', '198.18.0.1'), isEmpty);
+      native.traffics.clear();
+      expect(await driver.diagnose('awgr-a', '198.18.0.1'), isEmpty);
+    });
+
+    test('the library\'s numbers are read, and anything else is not', () {
+      expect(parseTraffic('12 34'), (rx: 12, tx: 34));
+      expect(parseTraffic('12'), isNull);
+      expect(parseTraffic('a b'), isNull);
+    });
+
     group('when the network changes', () {
       test('the sockets are opened afresh and the system is told about the '
           'new ones', () async {
@@ -526,6 +551,26 @@ void main() {
         reason: 'the sweep for strays is a separate matter, tested above',
       );
       expect(await driver.installed(), ['awgr-a']);
+    });
+
+    // How a tunnel that lost its interface to a replacement that then failed is
+    // put back on one: the key stays on the status bar throughout.
+    test('installing the same name again keeps the service', () async {
+      await driver.install(name: 'awgr-a', conf: mainConf);
+      await driver.install(name: 'awgr-a', conf: mainConf);
+      expect(bridge.calls.where((c) => c == 'release'), isEmpty);
+    });
+
+    test('an interface that will not open when nothing else is running lets '
+        'the service go', () async {
+      await driver.install(name: 'awgr-a', conf: mainConf);
+      bridge.establishError = PlatformException(code: 'establish');
+      await expectLater(
+        driver.install(name: 'awgr-a', conf: mainConf),
+        throwsA(isA<TunnelException>()),
+      );
+      expect(await driver.installed(), isEmpty);
+      expect(bridge.calls.last, 'release');
     });
 
     test(

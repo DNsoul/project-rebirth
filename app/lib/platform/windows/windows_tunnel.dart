@@ -198,6 +198,51 @@ class WindowsTunnelDriver implements TunnelDriver {
   @override
   Future<void> rebind(String name) async {}
 
+  /// Every tunnel has its own adapter: a new one leaves the old one working.
+  @override
+  bool get oneAtATime => false;
+
+  /// What the tunnel service counts, and which way Windows sends traffic for
+  /// [address]: another VPN or a proxy with a network adapter of its own can
+  /// take the very addresses the tunnel is for. The second costs PowerShell's
+  /// second, which is why this is only asked after a failure.
+  @override
+  Future<String> diagnose(String name, String address) async {
+    _checkName(name);
+    final parts = <String>[];
+    try {
+      final r = await _run(_tunnelExe, ['stats', name]);
+      final s = r.exitCode == 0 ? parseTunnelStats('${r.stdout}') : null;
+      if (s != null) parts.add(describeTraffic(s.rx, s.tx));
+    } on Object {
+      // Nothing to say about it.
+    }
+    final ip = InternetAddress.tryParse(address);
+    if (ip != null && ip.type == InternetAddressType.IPv4) {
+      try {
+        // Single quotes only: double ones would have to survive being passed
+        // on the command line.
+        final r = await _run(
+          'powershell.exe',
+          powershellArguments(
+            "Find-NetRoute -RemoteIPAddress '${ip.address}' -ErrorAction Stop "
+            r'| Where-Object { $_.DestinationPrefix } | Select-Object -First 1 '
+            r"| ForEach-Object { 'route ' + $_.DestinationPrefix + ' ' + $_.InterfaceAlias }",
+          ),
+        );
+        final route = parseRouteLine('${r.stdout}');
+        if (route != null) {
+          parts.add(
+            'Windows sends ${ip.address} to ${route.adapter} (${route.prefix})',
+          );
+        }
+      } on Object {
+        // Nothing to say about it.
+      }
+    }
+    return parts.join(', ');
+  }
+
   // ----------------------------------------------------------------- helpers
 
   /// Waits until the tunnel's service is running (or gone).
@@ -299,6 +344,31 @@ class WindowsTunnelDriver implements TunnelDriver {
 /// The newest handshake in the output of `awgtunnel handshake <name>`, which is
 /// the time in unix seconds, zero for none yet. Also reads the older form, one
 /// `public-key<TAB>unix-seconds` line per peer, as `awg show` printed it.
+/// The numbers from `awgtunnel stats <name>`: a line each, "handshake N", "rx N",
+/// "tx N". Null when the output is not that.
+({int handshake, int rx, int tx})? parseTunnelStats(String output) {
+  final values = <String, int>{};
+  for (final line in const LineSplitter().convert(output)) {
+    final parts = line.trim().split(RegExp(r'\s+'));
+    if (parts.length != 2) continue;
+    final n = int.tryParse(parts[1]);
+    if (n != null) values[parts[0]] = n;
+  }
+  final hs = values['handshake'], rx = values['rx'], tx = values['tx'];
+  if (hs == null || rx == null || tx == null) return null;
+  return (handshake: hs, rx: rx, tx: tx);
+}
+
+/// The line the route query prints: `route <prefix> <adapter name>`. The name
+/// may have spaces, or letters that came through the code page garbled.
+({String prefix, String adapter})? parseRouteLine(String output) {
+  for (final line in const LineSplitter().convert(output)) {
+    final m = RegExp(r'^route (\S+) (.+)$').firstMatch(line.trim());
+    if (m != null) return (prefix: m.group(1)!, adapter: m.group(2)!.trim());
+  }
+  return null;
+}
+
 DateTime? parseLatestHandshake(String output) {
   var newest = 0;
   for (final line in const LineSplitter().convert(output)) {

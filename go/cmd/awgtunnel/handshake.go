@@ -13,28 +13,53 @@ import (
 // shaken hands yet. The answer is lines of key=value up to an empty line, and it
 // ends with errno=0 when the request worked.
 func newestHandshake(answer io.Reader) (int64, error) {
-	var newest int64
+	s, err := readStats(answer)
+	return s.handshake, err
+}
+
+// stats is what a tunnel says about itself: its newest handshake (unix
+// seconds, 0 for none) and the bytes received and sent, over all peers.
+type stats struct {
+	handshake int64
+	rx, tx    uint64
+}
+
+// String is what "awgtunnel stats" prints: a line for each, name and number.
+func (s stats) String() string {
+	return fmt.Sprintf("handshake %d\nrx %d\ntx %d", s.handshake, s.rx, s.tx)
+}
+
+// readStats reads the answer to a UAPI "get=1" request.
+func readStats(answer io.Reader) (stats, error) {
+	var s stats
 	scanner := bufio.NewScanner(answer)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
 			break
 		}
-		if v, ok := strings.CutPrefix(line, "errno="); ok {
-			if v != "0" {
-				return 0, fmt.Errorf("the tunnel answered errno=%s", v)
-			}
-			continue
-		}
-		v, ok := strings.CutPrefix(line, "last_handshake_time_sec=")
+		key, v, ok := strings.Cut(line, "=")
 		if !ok {
 			continue
 		}
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > newest {
-			newest = n
+		switch key {
+		case "errno":
+			if v != "0" {
+				return stats{}, fmt.Errorf("the tunnel answered errno=%s", v)
+			}
+		case "last_handshake_time_sec":
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > s.handshake {
+				s.handshake = n
+			}
+		case "rx_bytes":
+			n, _ := strconv.ParseUint(v, 10, 64)
+			s.rx += n
+		case "tx_bytes":
+			n, _ := strconv.ParseUint(v, 10, 64)
+			s.tx += n
 		}
 	}
-	return newest, scanner.Err()
+	return s, scanner.Err()
 }
 
 // command is what the program was asked to do.
@@ -49,6 +74,7 @@ const usage = `usage:
   awgtunnel install <conf>        install the tunnel service for a configuration and start it
   awgtunnel uninstall <name>      stop and remove the tunnel service called <name>
   awgtunnel handshake <name>      print the time of the newest handshake (unix seconds, 0 if none)
+  awgtunnel stats <name>          print the newest handshake and the bytes received and sent
   awgtunnel log <folder>          print the tunnel's log kept in <folder>
   awgtunnel version
   awgtunnel /tunnelservice <conf> (used by the service manager)`
@@ -60,7 +86,7 @@ func parseArgs(args []string) (command, error) {
 	}
 	name, rest := args[0], args[1:]
 	switch name {
-	case "install", "uninstall", "handshake", "log", "/tunnelservice":
+	case "install", "uninstall", "handshake", "stats", "log", "/tunnelservice":
 		if len(rest) != 1 || rest[0] == "" {
 			return command{}, fmt.Errorf("%s takes one argument\n%s", name, usage)
 		}

@@ -123,8 +123,9 @@ func awgTurnOffAll() C.int {
 	return C.int(len(all))
 }
 
-// awgRebind is for a change of network: it opens the client's sockets afresh
-// and starts a new handshake at once. It returns 0, -1 for a handle that is not
+// awgRebind is for a change of network or a tunnel gone quiet: it moves the
+// client to new sockets on a new port and makes a handshake at once, even one
+// right after the last (Tunnel.Rebind says why). It returns 0, -1 for a handle that is not
 // running, or -2 when the sockets could not be opened (awgLastError says why).
 // The sockets have new descriptors afterwards (awgSocketV4, awgSocketV6).
 //
@@ -159,6 +160,22 @@ func awgLatestHandshake(handle C.int) C.longlong {
 		return C.longlong(when.Unix())
 	}
 	return 0
+}
+
+// awgTraffic is how many bytes the tunnel has received and sent, as "rx tx", or
+// NULL for a handle that is not running. The caller frees the text with awgFree.
+//
+//export awgTraffic
+func awgTraffic(handle C.int) *C.char {
+	t := lookup(handle)
+	if t == nil {
+		return nil
+	}
+	rx, tx, ok := t.Traffic()
+	if !ok {
+		return nil
+	}
+	return C.CString(fmt.Sprintf("%d %d", rx, tx))
 }
 
 // awgSocketV4 and awgSocketV6 are the descriptors of the client's UDP sockets,
@@ -203,4 +220,4 @@ func awgFree(p *C.char) { C.free(unsafe.Pointer(p)) }
 // it was built with.
 //
 //export awgVersion
-func awgVersion() *C.char { return C.CString("awglib 2") }
+func awgVersion() *C.char { return C.CString("awglib 3") }

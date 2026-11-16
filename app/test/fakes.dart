@@ -356,9 +356,13 @@ class FakeGist implements GistSource {
   /// True while a read is waiting at the gate.
   bool fetchWaiting = false;
 
+  /// Called at every read: on a phone the read goes through the tunnel.
+  void Function()? onFetch;
+
   @override
   Future<GistSnapshot?> fetch({String? etag}) async {
     fetches++;
+    onFetch?.call();
     final gate = fetchGate;
     if (gate != null) {
       fetchWaiting = true;
@@ -416,6 +420,61 @@ class FakeTunnel implements TunnelDriver {
   /// When set, every handshake is reported as this old.
   Duration? handshakeAge;
 
+  /// Like Android: opening a tunnel takes the interface away from the others,
+  /// which go on talking to their servers and carry nothing.
+  @override
+  bool oneAtATime = false;
+
+  /// The tunnel the interface leads into: the one installed last, until it is
+  /// removed (and the interface with it).
+  String? interfaceOwner;
+
+  /// Handshakes the way the tunnel library makes them, instead of "just now" at
+  /// every look: one when a tunnel comes up, one when something is sent through a
+  /// session that has gone stale ([traffic]), and one at once when it is nudged
+  /// ([rebind]), as Rebirth's library does. Time passes with the clock.
+  bool paced = false;
+
+  /// With [paced]: tunnels whose path has stopped carrying anything. Nothing they
+  /// send gets through until a nudge moves them to a new port.
+  final Set<String> stuck = {};
+
+  /// With [paced]: whether a nudge makes a handshake at once. Off for Windows,
+  /// where nudging is left to the tunnel service.
+  bool nudgeHandshakes = true;
+
+  final Map<String, DateTime> _handshakeAt = {};
+
+  bool _knownTo(String name) {
+    final t = _installed[name];
+    if (t == null) return false;
+    final server = fleet.byEndpoint(t.endpoint);
+    if (server == null || !server.alive) return false;
+    final isEnrollment =
+        decodeStd(t.privateKey, 32).toString() ==
+        server.enrollPrivateKey.toString();
+    return isEnrollment || server.devices.containsKey(_pubOf[name]);
+  }
+
+  void _shake(String name) {
+    if (!stuck.contains(name) && _knownTo(name)) {
+      _handshakeAt[name] = clock.now();
+    }
+  }
+
+  /// With [paced]: something is sent through the tunnel the interface leads
+  /// into, such as a look at the settings. A session older than two minutes is
+  /// renewed on the way, as the library does.
+  void traffic() {
+    final name = oneAtATime ? interfaceOwner : lastInstalled;
+    if (!paced || name == null) return;
+    final last = _handshakeAt[name];
+    if (last == null ||
+        clock.now().difference(last) > const Duration(minutes: 2)) {
+      _shake(name);
+    }
+  }
+
   @override
   Future<String?> preflight() async => problem;
 
@@ -440,6 +499,10 @@ class FakeTunnel implements TunnelDriver {
     final pair = await tunnelKeyPairFromPrivate(decodeStd(t.privateKey, 32));
     _pubOf[name] = encodeStd(pair.publicKey);
     if (name != 'awgr-enroll') lastInstalled = name;
+    interfaceOwner = name;
+    stuck.remove(name);
+    _handshakeAt.remove(name);
+    if (paced) _shake(name);
   }
 
   /// Called as a tunnel is about to be removed, so a test can look at what the
@@ -452,6 +515,9 @@ class FakeTunnel implements TunnelDriver {
     log.add('uninstall $name');
     _installed.remove(name);
     _pubOf.remove(name);
+    _handshakeAt.remove(name);
+    stuck.remove(name);
+    if (interfaceOwner == name) interfaceOwner = null;
     if (lastInstalled == name) {
       lastInstalled = _installed.keys
           .where((n) => n != 'awgr-enroll')
@@ -470,6 +536,19 @@ class FakeTunnel implements TunnelDriver {
     log.add('rebind $name');
     final e = rebindError;
     if (e != null) throw e;
+    if (paced && nudgeHandshakes && _installed.containsKey(name)) {
+      stuck.remove(name); // a new port
+      _shake(name);
+    }
+  }
+
+  /// Tunnels that were asked why they carry nothing, and with which address.
+  final List<String> diagnosed = [];
+
+  @override
+  Future<String> diagnose(String name, String address) async {
+    diagnosed.add('$name $address');
+    return _installed.containsKey(name) ? 'received 0 B, sent 1 KB' : '';
   }
 
   Iterable<String> get ours => _installed.keys;
@@ -483,26 +562,22 @@ class FakeTunnel implements TunnelDriver {
 
   @override
   Future<DateTime?> latestHandshake(String name) async {
-    final t = _installed[name];
-    if (t == null) return null;
-    final server = fleet.byEndpoint(t.endpoint);
-    if (server == null || !server.alive) return null;
-
-    final isEnrollment =
-        decodeStd(t.privateKey, 32).toString() ==
-        server.enrollPrivateKey.toString();
-    if (!isEnrollment && !server.devices.containsKey(_pubOf[name])) return null;
+    if (paced) return _handshakeAt[name];
+    if (!_knownTo(name)) return null;
     return handshakeAge == null
         ? clock.now()
         : clock.now().subtract(handshakeAge!);
   }
 
   /// Whether traffic really passes through [name]: the server has to know the
-  /// key and have the same address on record for it.
+  /// key and have the same address on record for it, and the phone has to send
+  /// it there.
   bool carries(String name) {
     final t = _installed[name];
     final server = t == null ? null : fleet.byEndpoint(t.endpoint);
     if (t == null || server == null || !server.alive) return false;
+    if (oneAtATime && interfaceOwner != name) return false;
+    if (paced && stuck.contains(name)) return false;
     return server.addressOf(_pubOf[name]!) == t.address;
   }
 }
@@ -520,8 +595,13 @@ class FakeProbe implements DataPathProbe {
   Future<bool> resolverAnswers(String server, Duration within) async {
     asked.add(server);
     final name = tunnel.lastInstalled;
-    return answers && name != null && tunnel.carries(name);
+    final ok = answers && name != null && tunnel.carries(name);
+    lastReport = ok ? '' : 'asked 8 times, no answer';
+    return ok;
   }
+
+  @override
+  String lastReport = '';
 }
 
 class FakeDns implements DnsGuard {

@@ -285,6 +285,25 @@ void main() {
       expect(int.parse(m!.group(1)!), greaterThanOrEqualTo(250));
     });
 
+    test('a very long gap is the system holding the program still, not a '
+        'stall', () async {
+      final lines = <String>[];
+      final dog = StallWatchdog(
+        log: lines.add,
+        interval: const Duration(milliseconds: 10),
+        threshold: const Duration(milliseconds: 100),
+        pausedAfter: const Duration(milliseconds: 1000),
+      )..start();
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+      block(1300);
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+      dog.stop();
+
+      expect(dog.stalls, 0);
+      expect(lines.join('\n'), contains('held the program still for 1 s'));
+      expect(lines.join('\n'), isNot(contains('stuck')));
+    });
+
     test('says nothing while the program keeps up', () async {
       final lines = <String>[];
       final dog = StallWatchdog(

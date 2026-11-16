@@ -63,11 +63,18 @@ func run(cmd command) error {
 	case "uninstall":
 		return uninstall(cmd.arg)
 	case "handshake":
-		seconds, err := handshake(cmd.arg)
+		s, err := query(cmd.arg)
 		if err != nil {
 			return err
 		}
-		fmt.Println(seconds)
+		fmt.Println(s.handshake)
+		return nil
+	case "stats":
+		s, err := query(cmd.arg)
+		if err != nil {
+			return err
+		}
+		fmt.Println(s)
 		return nil
 	case "log":
 		return printLog(cmd.arg)
@@ -188,20 +195,20 @@ func waitGone(m *mgr.Mgr, serviceName string) {
 }
 
 // handshake asks a running tunnel when its server last answered.
-func handshake(name string) (int64, error) {
+func query(name string) (stats, error) {
 	if _, err := services.ServiceNameOfTunnel(name); err != nil {
-		return 0, err
+		return stats{}, err
 	}
 	c, err := (&namedpipe.DialConfig{}).DialTimeout(uapiPipe+name, 3*time.Second)
 	if err != nil {
-		return 0, err
+		return stats{}, err
 	}
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 	if _, err := c.Write([]byte("get=1\n\n")); err != nil {
-		return 0, err
+		return stats{}, err
 	}
-	return newestHandshake(c)
+	return readStats(c)
 }
 
 // printLog prints what the tunnel service has written to its log in dir.

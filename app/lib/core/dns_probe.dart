@@ -15,12 +15,15 @@ import 'platform.dart';
 /// address handshakes happily and then carries nothing. An answer from the
 /// resolver means the whole path works.
 ///
-/// Each question goes out from a socket of its own, which is thrown away after
-/// it. Right after the tunnel comes up Windows answers a send with "host
-/// unreachable" until the route is in place, and a socket that has said so is not
-/// to be trusted again (the registration socket died of exactly this on the first
-/// real run). A question that fails for that reason costs a second and the next
-/// one starts clean.
+/// A question goes out every second from a socket of its own. Right after the
+/// tunnel comes up Windows answers a send with "host unreachable" until the route
+/// is in place, and a socket that has said so is not to be trusted again (the
+/// registration socket died of exactly this on the first real run): it is closed,
+/// and the next question starts clean.
+///
+/// The others stay open until the end, and an answer on any of them counts. The
+/// resolver looks a name up abroad before it answers, and an answer that took
+/// longer than a second used to arrive at a socket that had already been closed.
 class UdpDnsProbe implements DataPathProbe {
   UdpDnsProbe({
     this.name = 'one.one.one.one',
@@ -35,77 +38,111 @@ class UdpDnsProbe implements DataPathProbe {
 
   final DatagramBinder _bind;
 
+  String _report = '';
+
+  @override
+  String get lastReport => _report;
+
   @override
   Future<bool> resolverAnswers(String server, Duration within) async {
+    _report = '';
     final target = InternetAddress.tryParse(server);
     if (target == null) {
+      _report = '"$server" is not an address';
       return false;
     }
     final id = Random.secure().nextInt(0x10000);
     final query = buildQuery(id, name);
+    final answered = Completer<void>();
+    final open = <RawDatagramSocket>[];
+    final subscriptions = <StreamSubscription<RawSocketEvent>>[];
+    var asked = 0;
+    var errors = 0;
+    String? lastError;
+    void failed(Object e) {
+      errors++;
+      lastError = _short(e);
+    }
 
     final deadline = DateTime.now().add(within);
-    while (DateTime.now().isBefore(deadline)) {
-      if (await _askOnce(target, query, id, const Duration(seconds: 1))) {
+    try {
+      while (!answered.isCompleted && DateTime.now().isBefore(deadline)) {
+        asked++;
+        try {
+          final s = await _bind();
+          open.add(s);
+          subscriptions.add(
+            s.listen(
+              (event) {
+                if (event != RawSocketEvent.read) {
+                  return;
+                }
+                try {
+                  final datagram = s.receive();
+                  if (datagram != null &&
+                      isAnswerTo(id, datagram.data) &&
+                      !answered.isCompleted) {
+                    answered.complete();
+                  }
+                } on Object catch (e) {
+                  failed(e);
+                  _close(s);
+                }
+              },
+              onError: (Object e) {
+                failed(e);
+                _close(s);
+              },
+              cancelOnError: true,
+            ),
+          );
+          s.send(query, target, port);
+        } on Object catch (e) {
+          failed(e);
+        }
+        // The next question in a second, unless the answer comes first. Always a
+        // wait, so that failing quickly cannot turn this into a spin.
+        final left = deadline.difference(DateTime.now());
+        final wait = left < const Duration(seconds: 1)
+            ? left
+            : const Duration(seconds: 1);
+        if (wait > Duration.zero) {
+          await Future.any([answered.future, Future<void>.delayed(wait)]);
+        }
+      }
+      if (answered.isCompleted) {
         return true;
       }
+      _report =
+          'asked $asked times, $errors socket errors'
+          '${lastError == null ? '' : ' (last: $lastError)'}, no answer';
+      return false;
+    } finally {
+      for (final sub in subscriptions) {
+        await sub.cancel();
+      }
+      for (final s in open) {
+        _close(s);
+      }
     }
-    return false;
   }
 
-  /// One question from a fresh socket. Always takes the whole [wait] unless it is
-  /// answered, so that failing quickly cannot turn the caller's loop into a spin.
-  Future<bool> _askOnce(
-    InternetAddress target,
-    Uint8List query,
-    int id,
-    Duration wait,
-  ) async {
-    final answered = Completer<bool>();
-    final timer = Timer(wait, () {
-      if (!answered.isCompleted) {
-        answered.complete(false);
-      }
-    });
-    RawDatagramSocket? socket;
-    StreamSubscription<RawSocketEvent>? subscription;
+  static void _close(RawDatagramSocket s) {
     try {
-      socket = await _bind();
-      final s = socket;
-      subscription = s.listen(
-        (event) {
-          if (event != RawSocketEvent.read) {
-            return;
-          }
-          try {
-            final datagram = s.receive();
-            if (datagram != null &&
-                isAnswerTo(id, datagram.data) &&
-                !answered.isCompleted) {
-              answered.complete(true);
-            }
-          } on Object {
-            // The socket is finished with; the attempt just times out.
-          }
-        },
-        onError: (Object _) {},
-        cancelOnError: true,
-      );
-      s.send(query, target, port);
+      s.close();
     } on Object {
-      // Could not open or send; the attempt just times out.
+      // Already closed.
     }
-    try {
-      return await answered.future;
-    } finally {
-      timer.cancel();
-      await subscription?.cancel();
-      try {
-        socket?.close();
-      } on Object {
-        // Already closed.
-      }
+  }
+
+  /// An error in a few words: the system's own message is long and, on a
+  /// Russian Windows, in Russian; the number is what can be looked up.
+  static String _short(Object e) {
+    if (e is SocketException) {
+      final code = e.osError?.errorCode;
+      return code == null ? e.message : 'error $code';
     }
+    return e.runtimeType.toString();
   }
 }
 

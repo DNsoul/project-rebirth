@@ -212,6 +212,40 @@ void main() {
         ),
         at: 350,
       ),
+      // What is said when the server took the device and the tunnel carries
+      // nothing: the published server is read again to tell which it is.
+      const _Shot(
+        '7e-silent-server-in-place',
+        AppStatus(
+          Phase.failed,
+          message:
+              'Сервер на месте и принял устройство, но трафик через туннель не идёт. '
+              'Если включён другой VPN или прокси, выключите его и повторите.',
+          step: ConnectStep.traffic,
+        ),
+        at: 140,
+      ),
+      const _Shot(
+        '7f-silent-server-replaced',
+        AppStatus(
+          Phase.failed,
+          message:
+              'Этот сервер только что заменили. Нажмите ещё раз, чтобы подключиться к новому.',
+          step: ConnectStep.traffic,
+        ),
+        at: 140,
+      ),
+      const _Shot(
+        '7g-silent-server-unknown',
+        AppStatus(
+          Phase.failed,
+          message:
+              'Сервер принял устройство, но трафик через туннель не идёт. '
+              'Повторите через минуту; если не поможет, выключите другие VPN и прокси.',
+          step: ConnectStep.traffic,
+        ),
+        at: 140,
+      ),
       const _Shot(
         '7d-refused',
         AppStatus(
@@ -412,11 +446,7 @@ void main() {
       const Size(360, 780),
       'phone-log-denied.png',
     );
-    await render(
-      [named('g1-guide')],
-      const Size(360, 780),
-      'phone-guide.png',
-    );
+    await render([named('g1-guide')], const Size(360, 780), 'phone-guide.png');
     await render(
       [named('g3-guide-end')],
       const Size(360, 780),

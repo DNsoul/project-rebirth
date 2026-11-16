@@ -167,7 +167,7 @@ Future<void> runAndroid(List<String> args) async {
     ),
   );
 
-  StallWatchdog(log: log).start();
+  StallWatchdog(log: log, pausedAfter: const Duration(seconds: 3)).start();
   // First what the person has to allow, one question at a time: the notification
   // (here), then the VPN (in the controller's start-up check). The window is
   // already up behind the questions.

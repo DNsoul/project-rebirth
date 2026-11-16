@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -264,6 +265,9 @@ func TestARunningClientReachesAServerThroughTheRealProtocol(t *testing.T) {
 	if !ok || time.Since(when) > time.Minute {
 		t.Errorf("handshake %v %v", when, ok)
 	}
+	if rx, tx, ok := tunnel.Traffic(); !ok || rx == 0 || tx == 0 {
+		t.Errorf("traffic after a reply came back: rx=%d tx=%d ok=%v", rx, tx, ok)
+	}
 	if v4, _ := tunnel.SocketFDs(); v4 < 0 {
 		t.Errorf("no socket reported for the client (v4=%d)", v4)
 	}
@@ -272,6 +276,16 @@ func TestARunningClientReachesAServerThroughTheRealProtocol(t *testing.T) {
 	tunnel.Close() // harmless the second time
 	if _, ok := tunnel.LatestHandshake(); ok {
 		t.Error("a closed tunnel still reports a handshake")
+	}
+	if _, _, ok := tunnel.Traffic(); ok {
+		t.Error("a closed tunnel still reports traffic")
+	}
+}
+
+func TestTrafficAddsUpEveryPeer(t *testing.T) {
+	rx, tx := parseTraffic("private_key=x\npublic_key=a\nrx_bytes=10\ntx_bytes=7\npublic_key=b\nrx_bytes=5\ntx_bytes=0\nerrno=0\n")
+	if rx != 15 || tx != 7 {
+		t.Errorf("rx=%d tx=%d, want 15 and 7", rx, tx)
 	}
 }
 
@@ -394,38 +408,67 @@ func pingThroughTheTunnel(t *testing.T, clientNet *netstack.Net) {
 	}
 }
 
-// After the phone changes networks the client opens its sockets afresh and asks
-// for a new handshake: data still crosses, and a handshake that was due really is
-// made at once rather than whenever the old timers get round to it.
-func TestRebindKeepsTheTunnelWorkingAndStartsANewHandshake(t *testing.T) {
+// After the phone changes networks, or the tunnel has gone quiet, the client moves
+// to sockets on a new port and makes a handshake from them at once: even a moment
+// after the last one, when the library on its own would wait (it sends none within
+// five seconds of the last, and none for two minutes while it trusts its session).
+// The app judges the nudge by that handshake; on the user's phone, nudges made
+// right after a handshake were taken for failures and working tunnels were torn
+// down (2026-11 logs). Data still crosses afterwards.
+func TestRebindMovesToANewPortAndHandshakesAtOnce(t *testing.T) {
 	tunnel, clientNet := pairOnLoopback(t)
 	pingThroughTheTunnel(t, clientNet)
 	first, ok := tunnel.LatestHandshake()
 	if !ok {
 		t.Fatal("no handshake to start from")
 	}
+	portBefore := listenPort(t, tunnel)
 
-	// The library does not repeat a handshake within five seconds of the last
-	// one, so the change of network is simulated after that.
-	time.Sleep(5200 * time.Millisecond)
+	// Handshake times are whole seconds: wait into the next one, so that a new
+	// handshake can be told from the first. Still well inside the five seconds.
+	time.Sleep(1100 * time.Millisecond)
 	if err := tunnel.Rebind(); err != nil {
 		t.Fatal(err)
 	}
 	if v4, _ := tunnel.SocketFDs(); v4 < 0 {
 		t.Errorf("no socket after rebinding (v4=%d)", v4)
 	}
-	pingThroughTheTunnel(t, clientNet)
+	if portAfter := listenPort(t, tunnel); portAfter == portBefore {
+		t.Errorf("still on port %d after rebinding", portAfter)
+	}
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(3 * time.Second)
 	for {
 		if again, ok := tunnel.LatestHandshake(); ok && again.After(first) {
-			return
+			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("still the handshake of %v, no new one after rebinding", first)
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
+	pingThroughTheTunnel(t, clientNet)
+}
+
+func listenPort(t *testing.T, tunnel *Tunnel) int {
+	t.Helper()
+	tunnel.mu.Lock()
+	defer tunnel.mu.Unlock()
+	out, err := tunnel.dev.IpcGet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if v, ok := strings.CutPrefix(line, "listen_port="); ok {
+			port, err := strconv.Atoi(v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return port
+		}
+	}
+	t.Fatal("no listen_port in the device's settings")
+	return 0
 }
 
 func TestRebindOfAClosedTunnelSaysSo(t *testing.T) {

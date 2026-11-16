@@ -12,6 +12,7 @@ class StallWatchdog {
     required this.log,
     this.interval = const Duration(milliseconds: 100),
     this.threshold = const Duration(milliseconds: 400),
+    this.pausedAfter,
   });
 
   final void Function(String line) log;
@@ -19,6 +20,13 @@ class StallWatchdog {
 
   /// How much longer than expected a gap has to be to be worth a line.
   final Duration threshold;
+
+  /// A gap this long is not the program being stuck but the system holding it
+  /// still: a phone freezes apps it does not show, for minutes at a time. On
+  /// the user's phone such gaps of up to eight minutes were written down as the
+  /// program being stuck (2026-11 logs). They are written down as what they are,
+  /// since a connection that drops right after one is worth knowing about.
+  final Duration? pausedAfter;
 
   final _clock = Stopwatch();
   Timer? _timer;
@@ -34,7 +42,10 @@ class StallWatchdog {
       final now = _clock.elapsedMilliseconds;
       final late = now - _last - interval.inMilliseconds;
       _last = now;
-      if (late >= threshold.inMilliseconds) {
+      final paused = pausedAfter;
+      if (paused != null && late >= paused.inMilliseconds) {
+        log('ui: the system held the program still for ${late ~/ 1000} s');
+      } else if (late >= threshold.inMilliseconds) {
         stalls++;
         log('ui: the program was stuck for $late ms');
       }
