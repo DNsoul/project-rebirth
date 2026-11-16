@@ -104,7 +104,7 @@ func run(log *slog.Logger, configPath string, tickEvery time.Duration) error {
 		Pub:    pub,
 		Cloud:  cloud,
 		Host:   host,
-		Prober: &lifecycle.GlobalpingProber{Client: globalping.New()},
+		Prober: &lifecycle.GlobalpingProber{Client: globalping.New(), UDP: lifecycle.NodeUDPTarget(host)},
 
 		// The availability log: whether this server can still get answers from
 		// Russia, written down for the record. Nothing acts on it.

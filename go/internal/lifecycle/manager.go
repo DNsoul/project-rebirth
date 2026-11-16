@@ -418,16 +418,27 @@ func (m *Manager) checkExternal(ctx context.Context, now time.Time) {
 	}
 	m.lastExternal = now
 
-	target, control, err := m.Prober.Reach(ctx, m.Cfg.IP)
+	var (
+		target, control Reach
+		detail          *ExternalDetail
+		err             error
+	)
+	if dp, ok := m.Prober.(DetailedProber); ok {
+		var d ExternalDetail
+		d, err = dp.ReachDetail(ctx, m.Cfg.IP)
+		target, control, detail = d.Target, d.Control, &d
+	} else {
+		target, control, err = m.Prober.Reach(ctx, m.Cfg.IP)
+	}
 	if err != nil {
 		m.log().Debug("the external check could not run", "error", err)
 		m.tracker.External(Inconclusive)
-		m.noteExternal(now, Reach{}, Reach{}, Inconclusive, err)
+		m.noteExternal(now, Reach{}, Reach{}, Inconclusive, nil, err)
 		return
 	}
 	round := Classify(target, control)
 	m.tracker.External(round)
-	m.noteExternal(now, target, control, round, nil)
+	m.noteExternal(now, target, control, round, detail, nil)
 	if round == Bad {
 		m.log().Warn("the target country cannot reach this server",
 			"reached", target.Reached, "of", target.Total, "control", control.Reached,

@@ -12,7 +12,6 @@ import (
 
 	"awgrotator/internal/deploy"
 	"awgrotator/internal/enroll"
-	"awgrotator/internal/globalping"
 	"awgrotator/internal/node"
 	"awgrotator/internal/splitplan"
 	"awgrotator/internal/tunneltest"
@@ -149,40 +148,6 @@ type TunnelTester struct{}
 // Test implements Tester.
 func (TunnelTester) Test(ctx context.Context, target tunneltest.Target) (tunneltest.Report, error) {
 	return tunneltest.Run(ctx, target, tunneltest.Options{})
-}
-
-// ---- reachability from outside
-
-// GlobalpingProber measures reachability from probes in the target country and
-// from a control group elsewhere.
-type GlobalpingProber struct {
-	Client *globalping.Client
-
-	// Country is where the server needs to be reachable from, and Control a
-	// country far from it. The defaults are Russia and Germany.
-	Country string
-	Control string
-}
-
-// Reach implements Prober. It uses ICMP, so it can see that an address has
-// stopped answering from the target country but not that one protocol is
-// being filtered while everything else still passes. The manager says so in
-// its status rather than letting a healthy verdict suggest otherwise.
-func (p *GlobalpingProber) Reach(ctx context.Context, ip string) (target, control Reach, err error) {
-	gp := p.Client
-	if gp == nil {
-		gp = globalping.New()
-	}
-
-	t, err := gp.Ping(ctx, ip, orDefault(p.Country, "RU"), 10)
-	if err != nil {
-		return Reach{}, Reach{}, err
-	}
-	c, err := gp.Ping(ctx, ip, orDefault(p.Control, "DE"), 6)
-	if err != nil {
-		return Reach{}, Reach{}, err
-	}
-	return Reach{Reached: t.Reached, Total: t.Total}, Reach{Reached: c.Reached, Total: c.Total}, nil
 }
 
 // ---- this machine

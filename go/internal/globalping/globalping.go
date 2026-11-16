@@ -39,10 +39,36 @@ func New() *Client {
 
 // Probe identifies where a measurement ran.
 type Probe struct {
-	City    string `json:"city"`
-	Country string `json:"country"`
-	Network string `json:"network"`
-	ASN     int    `json:"asn"`
+	City    string   `json:"city"`
+	Country string   `json:"country"`
+	Network string   `json:"network"`
+	ASN     int      `json:"asn"`
+	Tags    []string `json:"tags,omitempty"`
+}
+
+// Tags Globalping gives every probe, telling a home or mobile connection from
+// a machine in a datacenter. Blocking in Russia is done by the providers people
+// use at home and on the phone, so the two kinds of probe can disagree.
+const (
+	TagEyeball    = "eyeball-network"
+	TagDatacenter = "datacenter-network"
+)
+
+// HasTag reports whether the probe carries the tag.
+func (p Probe) HasTag(tag string) bool {
+	for _, t := range p.Tags {
+		if t == tag {
+			return true
+		}
+	}
+	return false
+}
+
+// Location chooses probes. The fields that are set must all match.
+type Location struct {
+	Country string   `json:"country,omitempty"`
+	Tags    []string `json:"tags,omitempty"`
+	Limit   int      `json:"limit,omitempty"`
 }
 
 // String renders a probe the way it appears in a report.
@@ -113,17 +139,7 @@ func (c *Client) Ping(ctx context.Context, target, country string, limit int) (R
 		Limit:     limit,
 		Locations: []location{{Country: country}},
 		Options:   map[string]any{"packets": 3},
-	}, func(r rawResult) (bool, string) {
-		// Ping reports "finished" even when every packet was lost, so the
-		// loss figure is what decides here.
-		if !r.finished() || r.Stats == nil {
-			return false, firstLine(r.RawOutput)
-		}
-		if r.Stats.Loss >= 100 {
-			return false, "100% потерь"
-		}
-		return true, fmt.Sprintf("%.0fms", r.Stats.Avg)
-	})
+	}, judgePing)
 }
 
 // DNSOverUDP sends a real UDP query to the given address and port. This is
@@ -158,6 +174,64 @@ func (c *Client) DNSOverUDP(ctx context.Context, resolver string, port int, name
 	})
 }
 
+// PingFrom measures ICMP reachability from several groups of probes in one
+// measurement. Each outcome carries its probe, tags included, so the caller
+// can tell the groups apart.
+func (c *Client) PingFrom(ctx context.Context, target string, from []Location) (Result, error) {
+	return c.run(ctx, request{
+		Type:      "ping",
+		Target:    target,
+		Locations: from,
+		Options:   map[string]any{"packets": 3},
+	}, judgePing)
+}
+
+// AskSameProbes sends a UDP DNS question for name to resolver:port from the
+// very probes that ran the measurement probesOf, in the same order, and counts
+// a probe as reached only when the answer carries want. Anything else that
+// replies is not the server being asked, so it does not count.
+//
+// It is how one probe's ping and UDP answers are set side by side: a probe that
+// got one through and not the other says which kind of traffic is stopped.
+func (c *Client) AskSameProbes(ctx context.Context, probesOf, resolver string, port int, name, want string) (Result, error) {
+	return c.run(ctx, request{
+		Type:      "dns",
+		Target:    name,
+		Locations: probesOf,
+		Options: map[string]any{
+			"resolver": resolver,
+			"protocol": "UDP",
+			"port":     port,
+			"query":    map[string]any{"type": "A"},
+		},
+	}, func(r rawResult) (bool, string) {
+		if !r.finished() {
+			return false, "нет ответа"
+		}
+		for _, a := range r.Answers {
+			if a.Value == want {
+				return true, fmt.Sprintf("%.0fms", r.totalMS())
+			}
+		}
+		if r.StatusCodeName != "" {
+			return false, "чужой ответ: " + r.StatusCodeName
+		}
+		return false, "чужой ответ"
+	})
+}
+
+func judgePing(r rawResult) (bool, string) {
+	// Ping reports "finished" even when every packet was lost, so the loss
+	// figure is what decides here.
+	if !r.finished() || r.Stats == nil {
+		return false, firstLine(r.RawOutput)
+	}
+	if r.Stats.Loss >= 100 {
+		return false, "100% потерь"
+	}
+	return true, fmt.Sprintf("%.0fms", r.Stats.Avg)
+}
+
 // HTTPS opens a TLS connection on the given port. The certificate does not
 // have to validate; completing the handshake is the signal.
 func (c *Client) HTTPS(ctx context.Context, target string, port int, country string, limit int) (Result, error) {
@@ -187,10 +261,13 @@ type location struct {
 }
 
 type request struct {
-	Type      string         `json:"type"`
-	Target    string         `json:"target"`
-	Limit     int            `json:"limit"`
-	Locations []location     `json:"locations"`
+	Type   string `json:"type"`
+	Target string `json:"target"`
+	Limit  int    `json:"limit,omitempty"`
+
+	// Locations is a list of places, or the ID of an earlier measurement
+	// whose probes are to be used again.
+	Locations any            `json:"locations"`
 	Options   map[string]any `json:"measurementOptions,omitempty"`
 }
 

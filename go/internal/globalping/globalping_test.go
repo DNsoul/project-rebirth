@@ -227,3 +227,88 @@ func TestLimitsParsing(t *testing.T) {
 		t.Errorf("remaining=%d reset=%d", remaining, reset)
 	}
 }
+
+// A measurement from several groups of probes: each result carries its tags.
+const pingGroups = `{"id":"m8","status":"finished","results":[
+ {"probe":{"city":"Kostroma","country":"RU","network":"Rostelecom","asn":12389,"tags":["eyeball-network"]},
+  "result":{"status":"finished","timings":[{"ttl":55,"rtt":40}],"stats":{"avg":40,"loss":0,"rcv":3}}},
+ {"probe":{"city":"Moscow","country":"RU","network":"Selectel","asn":49505,"tags":["datacenter-network","u-x"]},
+  "result":{"status":"finished","timings":[],"stats":{"loss":100,"rcv":0}}}]}`
+
+func TestPingFromAsksEveryGroupWithItsOwnLimitAndReadsTheTags(t *testing.T) {
+	c, posted := serve(t, pingGroups)
+	res, err := c.PingFrom(context.Background(), "203.0.113.9", []Location{
+		{Country: "RU", Tags: []string{TagEyeball}, Limit: 9},
+		{Country: "DE", Limit: 4},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req map[string]any
+	if err := json.Unmarshal([]byte((*posted)[0]), &req); err != nil {
+		t.Fatal(err)
+	}
+	if _, global := req["limit"]; global {
+		t.Errorf("a global limit next to per-place limits is refused by the API: %s", (*posted)[0])
+	}
+	locs, _ := req["locations"].([]any)
+	if len(locs) != 2 {
+		t.Fatalf("locations: %s", (*posted)[0])
+	}
+	first := locs[0].(map[string]any)
+	if first["country"] != "RU" || first["limit"] != float64(9) || first["tags"].([]any)[0] != TagEyeball {
+		t.Errorf("first place: %v", first)
+	}
+	if res.Total != 2 || res.Reached != 1 {
+		t.Fatalf("result: %+v", res)
+	}
+	if !res.Outcomes[0].Probe.HasTag(TagEyeball) || res.Outcomes[1].Probe.HasTag(TagEyeball) ||
+		!res.Outcomes[1].Probe.HasTag(TagDatacenter) {
+		t.Errorf("tags: %+v", res.Outcomes)
+	}
+}
+
+const dnsOurs = `{"id":"m9","status":"finished","results":[
+ {"probe":{"city":"Kostroma","country":"RU","network":"Rostelecom","asn":12389},
+  "result":{"status":"finished","statusCodeName":"NOERROR","answers":[{"name":"x.","type":"A","value":"192.0.2.1"}],"timings":{"total":30}}},
+ {"probe":{"city":"Tula","country":"RU","network":"ER-Telecom","asn":52207},
+  "result":{"status":"finished","statusCodeName":"NOERROR","answers":[{"name":"x.","type":"A","value":"10.10.10.10"}],"timings":{"total":30}}},
+ {"probe":{"city":"Ufa","country":"RU","network":"Vimpelcom","asn":3216},
+  "result":{"status":"finished","statusCodeName":"REFUSED","answers":[],"timings":{"total":30}}},
+ {"probe":{"city":"Kursk","country":"RU","network":"Kursktelecom","asn":42277},
+  "result":{"status":"failed","rawOutput":"timed out","answers":[],"timings":{"total":0}}}]}`
+
+func TestTheSameProbesAreAskedAndOnlyOurOwnAnswerCounts(t *testing.T) {
+	c, posted := serve(t, dnsOurs)
+	res, err := c.AskSameProbes(context.Background(), "m8", "203.0.113.9", 52886, "abc.example.com", "192.0.2.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req struct {
+		Type      string `json:"type"`
+		Target    string `json:"target"`
+		Locations string `json:"locations"`
+		Options   struct {
+			Resolver string `json:"resolver"`
+			Protocol string `json:"protocol"`
+			Port     int    `json:"port"`
+		} `json:"measurementOptions"`
+	}
+	if err := json.Unmarshal([]byte((*posted)[0]), &req); err != nil {
+		t.Fatalf("%v\n%s", err, (*posted)[0])
+	}
+	if req.Type != "dns" || req.Target != "abc.example.com" || req.Locations != "m8" ||
+		req.Options.Resolver != "203.0.113.9" || req.Options.Port != 52886 || req.Options.Protocol != "UDP" {
+		t.Errorf("request: %s", (*posted)[0])
+	}
+	// A different address or a refusal comes from something else that
+	// answered, not from the server.
+	if res.Total != 4 || res.Reached != 1 || !res.Outcomes[0].OK {
+		t.Fatalf("result: %+v", res)
+	}
+	for _, o := range res.Outcomes[1:] {
+		if o.OK || o.Detail == "" {
+			t.Errorf("%+v should not count and should say why", o)
+		}
+	}
+}

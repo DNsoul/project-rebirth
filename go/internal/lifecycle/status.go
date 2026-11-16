@@ -132,18 +132,35 @@ func (s StatusBody) Describe(now time.Time) string {
 		out += fmt.Sprintf("\nсвязь сервера с российскими сайтами (для записи, ни на что не влияет): %s с %s",
 			watchRoundWords(w.Round), time.Unix(w.Since, 0).Format("2006-01-02 15:04"))
 		out += fmt.Sprintf("\n  Россия: %s; контроль за рубежом: %s", w.RU, w.Control)
+		if w.Stuck > 0 {
+			out += fmt.Sprintf("\n  стучатся и не могут войти: %d устр. (ответы сервера до них не доходят)", w.Stuck)
+		}
 		for _, c := range w.Changes {
-			what := "проба сервера"
-			if c.What == "external" {
+			what, to := "проба сервера", watchRoundWords(c.To)
+			switch c.What {
+			case "external":
 				what = "проверка с российских точек"
+			case "clients":
+				what, to = "клиенты", clientsWords(c.To)
 			}
-			out += fmt.Sprintf("\n  %s  %s: %s", time.Unix(c.At, 0).Format("2006-01-02 15:04"), what, watchRoundWords(c.To))
+			out += fmt.Sprintf("\n  %s  %s: %s", time.Unix(c.At, 0).Format("2006-01-02 15:04"), what, to)
 		}
 	}
 	if s.Revoked {
 		out += "\nОТОЗВАН: этот ключ сервера больше не действует"
 	}
 	return out
+}
+
+// clientsWords says in words whether the clients get in.
+func clientsWords(state string) string {
+	switch state {
+	case clientsKnocking:
+		return "стучатся, но не входят (ответы сервера до них не доходят)"
+	case clientsOK:
+		return "входят"
+	}
+	return state
 }
 
 // watchRoundWords says a round in words.

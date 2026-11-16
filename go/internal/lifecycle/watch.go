@@ -65,16 +65,64 @@ type PeerTally struct {
 	// RxBytes and TxBytes are the totals since the tunnel started.
 	RxBytes int64 `json:"rx"`
 	TxBytes int64 `json:"tx"`
+
+	// Knocks is how many handshake initiations the server answered since the
+	// line before. It is left out when that is not known: on the first line
+	// after the manager starts, and with a node too old to count them.
+	Knocks *int `json:"knocks,omitempty"`
+
+	// Stuck is how many clients were knocking without ever completing a
+	// handshake: the server answers them and the answer does not get through.
+	Stuck int `json:"stuck,omitempty"`
+}
+
+// Whether the clients get in, as the watch sees it.
+const (
+	clientsOK       = "ok"
+	clientsKnocking = "knocking"
+)
+
+// Knocking says whether the clients, taken together, are being kept out.
+// Several clients stuck at once, or one stuck while nobody is connected, is what
+// a cut path looks like; one stuck client among connected ones is more likely
+// its own network.
+func (p *PeerTally) Knocking() bool {
+	return p.Stuck >= 2 || (p.Stuck >= 1 && p.Up == 0)
+}
+
+func clientsState(p *PeerTally) string {
+	if p.Knocking() {
+		return clientsKnocking
+	}
+	return clientsOK
 }
 
 // ExtSample is the answer of the Globalping check, put in the line that follows
 // it, so that the two ways of looking can be set side by side.
+//
+// RU and Control are what the verdict was made of. Before the check asked home
+// networks separately (lines without Home), RU was every probe in Russia, by
+// ping; since then it is the probes in home and mobile networks, each counted
+// only when ping and the UDP question both got through.
 type ExtSample struct {
 	At      int64  `json:"at"`
 	RU      [2]int `json:"ru"`
 	Control [2]int `json:"ctl"`
 	Round   string `json:"round"`
 	Err     string `json:"err,omitempty"`
+
+	// The breakdown, per kind of network and kind of traffic.
+	Home   *Tally `json:"home,omitempty"`
+	DC     *Tally `json:"dc,omitempty"`
+	Abroad *Tally `json:"abroad,omitempty"`
+
+	// UsedDC says the verdict counted datacenter probes in, for want of home
+	// ones.
+	UsedDC bool `json:"used_dc,omitempty"`
+
+	// Fail names the home networks that did not get through.
+	Fail []string `json:"fail,omitempty"`
+	Note string   `json:"note,omitempty"`
 }
 
 // Sample is one line of the log.
@@ -197,6 +245,10 @@ type WatchSummary struct {
 	RU      string        `json:"ru"`
 	Control string        `json:"control"`
 	Changes []WatchChange `json:"changes,omitempty"`
+
+	// Stuck is how many clients were knocking without getting in at the last
+	// look.
+	Stuck int `json:"stuck,omitempty"`
 }
 
 // watchState is what the manager remembers between looks.
@@ -220,6 +272,32 @@ type watchState struct {
 
 	// logFailed stops the same write error being reported at every look.
 	logFailed bool
+
+	// The node's count of answered initiations at the last look, to work out
+	// how many came in between, and whether the clients were getting in.
+	answered     uint64
+	nodeStarted  time.Time
+	haveAnswered bool
+	clients      string // "" before the first look that knew
+}
+
+// knocksSince works out how many initiations the node answered since the last
+// look, or nil when that cannot be known.
+func (w *watchState) knocksSince(st node.Status) *int {
+	h := st.Handshakes
+	if h == nil {
+		w.haveAnswered = false
+		return nil
+	}
+	defer func() { w.answered, w.nodeStarted, w.haveAnswered = h.Answered, st.StartedAt, true }()
+	if !w.haveAnswered {
+		return nil
+	}
+	n := int(h.Answered - w.answered)
+	if !st.StartedAt.Equal(w.nodeStarted) || h.Answered < w.answered {
+		n = int(h.Answered) // the node restarted in between: these are all since then
+	}
+	return &n
 }
 
 func (w *watchState) change(at time.Time, what, to string) {
@@ -259,7 +337,7 @@ func peerTally(s node.Status) *PeerTally {
 
 // noteExternal remembers how the Globalping check came out, for the next line,
 // and records a change when it differs from the last time.
-func (m *Manager) noteExternal(now time.Time, target, control Reach, round Round, err error) {
+func (m *Manager) noteExternal(now time.Time, target, control Reach, round Round, detail *ExternalDetail, err error) {
 	if m.Watch == nil {
 		return
 	}
@@ -268,6 +346,11 @@ func (m *Manager) noteExternal(now time.Time, target, control Reach, round Round
 		RU:      [2]int{target.Reached, target.Total},
 		Control: [2]int{control.Reached, control.Total},
 		Round:   roundName(round),
+	}
+	if d := detail; d != nil {
+		home, dc, abroad := d.Home, d.Datacenter, d.Abroad
+		e.Home, e.DC, e.Abroad = &home, &dc, &abroad
+		e.UsedDC, e.Fail, e.Note = d.Datacenters, d.Failed, d.Note
 	}
 	if err != nil {
 		e.Round = "unknown"
@@ -318,6 +401,11 @@ func (m *Manager) maybeWatch(ctx context.Context, now time.Time) {
 	}
 	if st, err := m.Host.NodeStatus(ctx); err == nil {
 		s.Peers = peerTally(st)
+		s.Peers.Knocks = m.watch.knocksSince(st)
+		if st.Handshakes != nil {
+			s.Peers.Stuck = st.Handshakes.Stuck
+			m.noteClients(now, s.Peers)
+		}
 	}
 	if m.watch.ext != nil {
 		s.Ext, m.watch.ext = m.watch.ext, nil
@@ -346,6 +434,21 @@ func (m *Manager) maybeWatch(ctx context.Context, now time.Time) {
 	m.watch.lastSample = &s
 }
 
+// noteClients records a change in whether the clients get in.
+func (m *Manager) noteClients(now time.Time, p *PeerTally) {
+	state := clientsState(p)
+	if m.watch.clients != "" && m.watch.clients != state {
+		m.watch.change(now, "clients", state)
+		if state == clientsKnocking {
+			m.log().Warn("clients knock but their handshakes do not complete: this server's answers may not be reaching them",
+				"stuck", p.Stuck, "connected", p.Up)
+		} else {
+			m.log().Info("clients get in again", "connected", p.Up)
+		}
+	}
+	m.watch.clients = state
+}
+
 // watchSummary is what the published status says about the watch, or nil before
 // the first look.
 func (m *Manager) watchSummary() *WatchSummary {
@@ -353,11 +456,15 @@ func (m *Manager) watchSummary() *WatchSummary {
 	if m.Watch == nil || s == nil {
 		return nil
 	}
-	return &WatchSummary{
+	w := &WatchSummary{
 		Round:   m.watch.round,
 		Since:   m.watch.since,
 		RU:      fmt.Sprintf("tcp %d/%d, udp %d/%d", s.RU.TCP[0], s.RU.TCP[1], s.RU.UDP[0], s.RU.UDP[1]),
 		Control: fmt.Sprintf("tcp %d/%d, udp %d/%d", s.Ctl.TCP[0], s.Ctl.TCP[1], s.Ctl.UDP[0], s.Ctl.UDP[1]),
 		Changes: append([]WatchChange(nil), m.watch.changes...),
 	}
+	if s.Peers != nil {
+		w.Stuck = s.Peers.Stuck
+	}
+	return w
 }

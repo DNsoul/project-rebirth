@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
@@ -55,6 +56,15 @@ type Node struct {
 	// The operator's control socket, reached by the manager on this machine.
 	controlStop context.CancelFunc
 	controlDone chan struct{}
+
+	// Clients that knock without getting in.
+	hs HandshakeWatch
+
+	// The responder the outside check talks to over UDP; nil when it is off
+	// or its port could not be opened. Status reads it without the lock.
+	reach     atomic.Pointer[ReachResponder]
+	reachStop context.CancelFunc
+	reachDone chan struct{}
 }
 
 // New returns a node for the given configuration.
@@ -80,7 +90,7 @@ func (n *Node) Start(ctx context.Context) error {
 	}
 
 	dev := device.NewDevice(tdev, conn.NewDefaultBind(),
-		device.NewLogger(device.LogLevelError, "awg: "))
+		n.hs.Logger(device.NewLogger(device.LogLevelError, "awg: ").Errorf))
 
 	// The devices that registered before this start are accepted from the
 	// first moment, so a restart does not cut anybody off.
@@ -129,8 +139,10 @@ func (n *Node) Start(ctx context.Context) error {
 		{"split resolver", n.startSplit},
 		{"device registration", n.startEnroll},
 		{"control socket", n.startControl},
+		{"outside check responder", n.startReach},
 	} {
 		if err := step.fn(ctx); err != nil {
+			n.stopReach()
 			n.stopControl()
 			n.stopEnroll()
 			if n.split != nil {
@@ -154,6 +166,7 @@ func (n *Node) Close() error {
 	// because a request being answered right now needs the lock to reach the
 	// device, and stopping waits for it. The operator's socket goes with it, for
 	// the same reason.
+	n.stopReach()
 	n.stopControl()
 	n.stopEnroll()
 
@@ -192,14 +205,21 @@ func (n *Node) Status() (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	return Status{
+	now := time.Now().UTC()
+	hs := n.hs.Observe(peers, now)
+	st := Status{
 		Interface:  n.cfg.Interface,
 		ListenPort: port,
 		StartedAt:  started,
-		UpdatedAt:  time.Now().UTC(),
+		UpdatedAt:  now,
 		Peers:      peers,
 		Split:      n.splitStatus(),
-	}, nil
+		Handshakes: &hs,
+	}
+	if r := n.reach.Load(); r != nil {
+		st.Reach = &ReachStatus{Port: r.Port, Name: r.Name, Answered: r.Answered()}
+	}
+	return st, nil
 }
 
 // WriteStatus refreshes the status file.
@@ -386,6 +406,44 @@ func (n *Node) startControl(context.Context) error {
 	return nil
 }
 
+// startReach opens the responder the outside check talks to over UDP. It is a
+// help to diagnosis, never a reason for the tunnel not to start: if its port
+// cannot be opened, the node says so and goes on without it.
+func (n *Node) startReach(context.Context) error {
+	if n.cfg.NoReach {
+		return nil
+	}
+	port := ReachPort(n.cfg.ListenPort)
+	pc, err := net.ListenPacket("udp4", ":"+strconv.Itoa(port))
+	if err != nil {
+		n.log.Warn("the outside check cannot ask this server over UDP: its port did not open",
+			"port", port, "error", err)
+		return nil
+	}
+	r := &ReachResponder{Port: port, Name: ReachName(n.cfg.PrivateKey)}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := r.Serve(ctx, pc); err != nil {
+			n.log.Warn("the outside check responder stopped", "error", err)
+		}
+	}()
+	n.reach.Store(r)
+	n.reachStop, n.reachDone = cancel, done
+	n.log.Info("answering the outside check over UDP", "port", port)
+	return nil
+}
+
+func (n *Node) stopReach() {
+	if n.reachStop != nil {
+		n.reach.Store(nil)
+		n.reachStop()
+		<-n.reachDone
+		n.reachStop, n.reachDone = nil, nil
+	}
+}
+
 func (n *Node) stopControl() {
 	if n.controlStop != nil {
 		n.controlStop()
@@ -499,6 +557,10 @@ func (n *Node) openFirewall(ctx context.Context) error {
 		// the tunnel side is allowed in, so the server does not become an
 		// open router for the internet.
 		{"route", "allow", "in", "on", n.cfg.Interface},
+	}
+	if !n.cfg.NoReach {
+		// The port the outside check asks over UDP.
+		steps = append(steps, []string{"allow", strconv.Itoa(ReachPort(n.cfg.ListenPort)) + "/udp"})
 	}
 	if ec := n.cfg.Enroll; ec != nil {
 		// Registration is addressed to the server itself, so it is input,

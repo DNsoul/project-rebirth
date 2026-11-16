@@ -116,6 +116,9 @@ func (b *Bot) statusView(ctx context.Context) view {
 	}
 	if w := s.Watch; w != nil {
 		fmt.Fprintf(&out, "Связь с российскими сайтами: %s с %s.\n", watchWords(w.Round), stamp(time.Unix(w.Since, 0)))
+		if w.Stuck > 0 {
+			fmt.Fprintf(&out, "Стучатся и не могут войти: %d устр. Ответы сервера до них не доходят.\n", w.Stuck)
+		}
 	}
 	if o, err := b.overview(ctx); err == nil {
 		online := 0
@@ -427,7 +430,7 @@ func resultText(kind lifecycle.ActionKind, r lifecycle.Result) string {
 		case lifecycle.Bad:
 			verdict = "сервер НЕ доступен из России"
 		}
-		return fmt.Sprintf("Проверка: из России дошли %d из %d точек, из-за рубежа %d из %d. Итог: %s.",
+		return fmt.Sprintf("Проверка: из домашних и мобильных сетей России дошли %d из %d точек, из-за рубежа %d из %d. Итог: %s.",
 			c.Target.Reached, c.Target.Total, c.Control.Reached, c.Control.Total, verdict)
 	}
 	return ""

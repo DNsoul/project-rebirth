@@ -233,6 +233,9 @@ func describeWatch(samples []lifecycle.Sample, loc *time.Location) string {
 
 		// the clients
 		b.WriteString("  " + clientsDuring(samples, p, loc) + "\n")
+		if n := stuckDuring(samples, p); n > 0 {
+			fmt.Fprintf(&b, "  Стучались и не могли войти: до %d устр. сразу.\n", n)
+		}
 
 		// what failed
 		if f := failedDuring(samples, p); f != "" {
@@ -241,6 +244,26 @@ func describeWatch(samples []lifecycle.Sample, loc *time.Location) string {
 		if ms := slowBefore(samples, p); ms != "" {
 			b.WriteString("  " + ms + "\n")
 		}
+	}
+
+	// Clients knocking without getting in: the server answers their handshakes
+	// and the answers do not get through.
+	for _, k := range knockingStretches(samples) {
+		end := "продолжается"
+		if k != knockingLast(samples) {
+			end = "до " + clock(k.to, loc)
+		}
+		fmt.Fprintf(&b, "\nКлиенты стучались, но не могли войти: с %s, %s (до %d устр. сразу).", clock(k.from, loc), end, k.samples)
+		covered := false
+		for _, p := range incidents {
+			if k.from <= p.to+incidentSlack && k.to >= p.from-incidentSlack {
+				covered = true
+			}
+		}
+		if !covered {
+			b.WriteString(" Проба с самого сервера связь с Россией в это время видела: ответы сервера терялись по дороге к клиентам.")
+		}
+		b.WriteString("\n")
 	}
 
 	// The outside check seeing a block the server's own look did not.
@@ -292,6 +315,46 @@ func hasExt(samples []lifecycle.Sample, from, to int64) bool {
 	return false
 }
 
+// knockingStretches finds the stretches in which clients knocked without getting
+// in. A period's samples field holds the most clients stuck at once.
+func knockingStretches(samples []lifecycle.Sample) []period {
+	var out []period
+	open := false
+	for _, s := range samples {
+		if s.Peers == nil {
+			continue
+		}
+		if !s.Peers.Knocking() {
+			open = false
+			continue
+		}
+		if open {
+			n := len(out) - 1
+			out[n].to = s.At
+			out[n].samples = max(out[n].samples, s.Peers.Stuck)
+			continue
+		}
+		out = append(out, period{round: "knocking", from: s.At, to: s.At, samples: s.Peers.Stuck})
+		open = true
+	}
+	return out
+}
+
+// knockingLast returns the stretch that is still going on at the end of the
+// samples, if there is one.
+func knockingLast(samples []lifecycle.Sample) period {
+	for i := len(samples) - 1; i >= 0; i-- {
+		if p := samples[i].Peers; p != nil {
+			if !p.Knocking() {
+				return period{}
+			}
+			ks := knockingStretches(samples)
+			return ks[len(ks)-1]
+		}
+	}
+	return period{}
+}
+
 // clientsDuring says what the server's own clients were doing around an incident:
 // the plainest evidence of whether people were actually cut off.
 func clientsDuring(samples []lifecycle.Sample, p period, loc *time.Location) string {
@@ -317,6 +380,18 @@ func clientsDuring(samples []lifecycle.Sample, p period, loc *time.Location) str
 		return "Клиенты: в журнале нет данных о них."
 	}
 	return "Клиенты: подключённые оставались, несмотря на потерю связи с Россией."
+}
+
+// stuckDuring returns the most clients knocking without getting in at once
+// during an incident.
+func stuckDuring(samples []lifecycle.Sample, p period) int {
+	most := 0
+	for _, s := range samples {
+		if s.Peers != nil && s.At >= p.from-10*60 && s.At <= p.to {
+			most = max(most, s.Peers.Stuck)
+		}
+	}
+	return most
 }
 
 func upBefore(s *lifecycle.Sample) int {
@@ -379,14 +454,46 @@ func oneLine(s lifecycle.Sample, loc *time.Location) string {
 		clock(s.At, loc), watchWords(s.Round),
 		s.RU.TCP[0], s.RU.TCP[1], s.RU.UDP[0], s.RU.UDP[1], s.RU.ICMP[0], s.RU.ICMP[1],
 		s.Ctl.TCP[0], s.Ctl.TCP[1])
-	if s.Peers != nil {
-		line += fmt.Sprintf(" · клиентов %d из %d", s.Peers.Up, s.Peers.Known)
+	if p := s.Peers; p != nil {
+		line += fmt.Sprintf(" · клиентов %d из %d", p.Up, p.Known)
+		if p.Knocks != nil {
+			line += fmt.Sprintf(", рукопожатий %d", *p.Knocks)
+		}
+		if p.Stuck > 0 {
+			line += fmt.Sprintf(", НЕ ВХОДЯТ %d", p.Stuck)
+		}
 	}
-	if s.Ext != nil {
-		line += fmt.Sprintf(" · снаружи %d/%d (%s)", s.Ext.RU[0], s.Ext.RU[1], watchWords(s.Ext.Round))
+	if e := s.Ext; e != nil {
+		line += " · снаружи " + outsideWords(e)
 	}
 	if s.Err != "" {
 		line += " · проба не сработала: " + s.Err
 	}
 	return line
+}
+
+// outsideWords renders the outside check: the verdict, and for checks that
+// asked home networks separately, how each kind of network and traffic did.
+func outsideWords(e *lifecycle.ExtSample) string {
+	if e.Home == nil {
+		return fmt.Sprintf("%d/%d (%s)", e.RU[0], e.RU[1], watchWords(e.Round))
+	}
+	out := fmt.Sprintf("дом %d/%d (%s; icmp %d/%d", e.RU[0], e.RU[1], watchWords(e.Round), e.Home.ICMP[0], e.Home.ICMP[1])
+	if e.Home.UDP[1] > 0 {
+		out += fmt.Sprintf(", udp %d/%d", e.Home.UDP[0], e.Home.UDP[1])
+	}
+	out += ")"
+	if e.DC != nil && e.DC.ICMP[1] > 0 {
+		out += fmt.Sprintf(", ЦОД icmp %d/%d", e.DC.ICMP[0], e.DC.ICMP[1])
+		if e.DC.UDP[1] > 0 {
+			out += fmt.Sprintf(" udp %d/%d", e.DC.UDP[0], e.DC.UDP[1])
+		}
+	}
+	if e.UsedDC {
+		out += ", домашних проб мало, учтены ЦОД"
+	}
+	if e.Note != "" {
+		out += ", " + e.Note
+	}
+	return out
 }

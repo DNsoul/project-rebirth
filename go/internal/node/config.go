@@ -66,6 +66,10 @@ type Config struct {
 	// with only the peers listed above.
 	Enroll *EnrollConfig `json:"enroll,omitempty"`
 
+	// NoReach turns off the small UDP responder the outside check talks to
+	// (see reach.go). It is on unless this says otherwise.
+	NoReach bool `json:"no_reach,omitempty"`
+
 	// StatusPath overrides DefaultStatusPath.
 	StatusPath string `json:"status_path,omitempty"`
 }

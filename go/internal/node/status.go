@@ -24,6 +24,11 @@ type PeerStatus struct {
 	LastHandshake time.Time `json:"last_handshake,omitempty"`
 	RxBytes       int64     `json:"rx_bytes"`
 	TxBytes       int64     `json:"tx_bytes"`
+
+	// HandshakeTries is set while the client keeps knocking without getting
+	// in: how many of its initiations the server answered with no completed
+	// handshake after them (see handshakes.go).
+	HandshakeTries int `json:"handshake_tries,omitempty"`
 }
 
 // Connected reports whether this peer handshook recently enough.
@@ -54,6 +59,14 @@ type Status struct {
 	UpdatedAt  time.Time    `json:"updated_at"`
 	Peers      []PeerStatus `json:"peers"`
 	Split      *SplitStatus `json:"split,omitempty"`
+
+	// Handshakes counts answered initiations and clients that knock without
+	// getting in. Nodes older than this field leave it out.
+	Handshakes *HandshakeStats `json:"handshakes,omitempty"`
+
+	// Reach is where the node answers the outside check over UDP, or nil when
+	// it does not.
+	Reach *ReachStatus `json:"reach,omitempty"`
 }
 
 // AnyConnected reports whether at least one client is currently up.
