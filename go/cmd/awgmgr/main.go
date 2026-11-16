@@ -23,7 +23,6 @@ import (
 	"awgrotator/internal/lifecycle"
 	"awgrotator/internal/stores"
 	"awgrotator/internal/telegram"
-	"awgrotator/internal/vultr"
 )
 
 func main() {
@@ -55,8 +54,12 @@ func run(log *slog.Logger, configPath string, tickEvery time.Duration) error {
 		return err
 	}
 
-	vc := vultr.New(cfg.VultrKey)
-	cloud := &lifecycle.VultrCloud{Client: vc, Tag: cfg.Tag}
+	// Every hosting provider this line uses. Each sees only what carries our
+	// tag, so nothing else on the accounts is ever counted or touched.
+	cloud, err := cfg.Providers()
+	if err != nil {
+		return err
+	}
 	host := &lifecycle.SystemHost{Cfg: cfg}
 	// The gist and, when this server has been given one, the GitLab package are
 	// equal places: everything is written to both, and whichever is behind is
@@ -90,7 +93,7 @@ func run(log *slog.Logger, configPath string, tickEvery time.Duration) error {
 		Cfg:    cfg,
 		J:      journal,
 		Cloud:  cloud,
-		Prov:   &lifecycle.DeployProvisioner{Cfg: cfg, Client: vc, Logf: progress},
+		Prov:   &lifecycle.DeployProvisioner{Cfg: cfg, Clouds: cloud, Logf: progress},
 		Tester: lifecycle.TunnelTester{},
 		Pub:    pub,
 		Host:   host,

@@ -62,7 +62,22 @@ VULTR_API_KEY=...
 GITHUB_TOKEN=...
 GITLAB_TOKEN=...   # необязательно: второе место на GitLab (установщики и файлы конфигурации)
 TELEGRAM_BOT_TOKEN=...   # необязательно: бот для управления (у @BotFather: /newbot)
+CHERRY_API_KEY=...   # необязательно: второй хостер, Cherry Servers (ключ даёт доступ ко всему аккаунту)
 ```
+
+**Хостеры и места.** Сервер может стоять у Vultr или у Cherry Servers. Место — это хостер и
+город: `vultr:sto`, `cherry:ams`. У каждого места своя оплата. Почасовые места (все города
+Vultr) выбираются и для самостоятельных переездов. Помесячные (Cherry: Амстердам, Шяуляй)
+выбираются только владельцем, из бота или командой `command move-region cherry:ams`: месяц
+оплачивается вперёд. Помесячный сервер уезжает сам не позже чем за 12 часов до конца
+оплаченного месяца, если включён автопереезд по возрасту. Cherry подключается один раз:
+`awgctl cloud setup cherry` создаёт отдельный проект `awg-rotator` и регистрирует ключ SSH,
+потом `awgctl update` передаёт места серверу. Программа видит только серверы этого проекта
+с меткой `awg-rotator`, поэтому другие серверы на аккаунте не трогает.
+
+Новый хостер подключается так: клиент API (как `go/internal/cherry`), адаптер в
+`go/internal/cloud` по образцу `cherry.go` и его города в `placesFor`
+(`go/cmd/awgctl/clouds.go`).
 
 ```powershell
 cd go
@@ -73,6 +88,9 @@ dist\awgctl.exe up                   # сервер, который дальше
 dist\awgctl.exe trust -o app\assets\bootstrap.json   # доступ, с которым собираются приложения
 dist\awgctl.exe status               # ключи, gist, серверы
 dist\awgctl.exe command move         # приказать серверу переехать сейчас
+dist\awgctl.exe command move-region cherry:ams   # переехать в определённое место
+dist\awgctl.exe cloud setup cherry   # подключить Cherry Servers (один раз)
+dist\awgctl.exe lab-tunnel -place cherry:ams     # опытный сервер с туннелем: создать, проверить, удалить
 dist\awgctl.exe release publish ...  # объявить новую версию приложений
 dist\awgctl.exe mirror set gitlab -project владелец/имя   # второе место: установщики и конфиг
 dist\awgctl.exe mirror token        # токен, которым серверы пишут на GitLab (один раз)

@@ -94,7 +94,7 @@ func TestAMoveThroughTheBotHappensOnceAndIsToldAbout(t *testing.T) {
 	if err := m.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(r.prov.reqs) != 1 || r.prov.reqs[0].Region != "waw" {
+	if len(r.prov.reqs) != 1 || r.prov.reqs[0].Place.Location != "waw" {
 		t.Fatalf("provisioned %+v", r.prov.reqs)
 	}
 	var kinds []EventKind

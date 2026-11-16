@@ -14,9 +14,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"awgrotator/internal/cloud"
 	"awgrotator/internal/node"
 	"awgrotator/internal/remote"
-	"awgrotator/internal/vultr"
 )
 
 // Paths on the server.
@@ -36,10 +36,8 @@ const (
 
 // Request is one server to build.
 type Request struct {
-	Region   string
-	Plan     string
-	OsID     int
-	Tag      string
+	Location string
+	Billing  cloud.Billing
 	Label    string
 	SSHKeyID string
 
@@ -57,7 +55,7 @@ type Request struct {
 	// is for files that cannot be made earlier because they describe the
 	// instance itself, such as the manager's configuration, which carries the
 	// instance's own identifier.
-	FilesFor func(inst *vultr.Instance) ([]File, error)
+	FilesFor func(s *cloud.Server) ([]File, error)
 
 	// Services are extra systemd units to enable and start after the node,
 	// for example the manager.
@@ -68,7 +66,7 @@ type Request struct {
 	// instance if it dies partway through records its identifier here:
 	// installing takes minutes, and an instance nobody has written down is
 	// one nobody can clean up.
-	OnCreated func(inst *vultr.Instance)
+	OnCreated func(s *cloud.Server)
 
 	// Signer authenticates to the new server as root.
 	Signer ssh.Signer
@@ -88,6 +86,7 @@ type File struct {
 
 // Result describes the server that is now running.
 type Result struct {
+	Provider   string
 	InstanceID string
 	IP         string
 	IPv6       string
@@ -104,7 +103,7 @@ type Logf func(format string, args ...any)
 //
 // On any failure after the instance exists, the instance is destroyed: a half
 // built server that nothing knows about would keep costing money.
-func Provision(ctx context.Context, vc *vultr.Client, req Request, logf Logf) (res *Result, err error) {
+func Provision(ctx context.Context, p cloud.Provider, req Request, logf Logf) (res *Result, err error) {
 	if err := req.Config.Validate(); err != nil {
 		return nil, fmt.Errorf("node configuration: %w", err)
 	}
@@ -112,20 +111,19 @@ func Provision(ctx context.Context, vc *vultr.Client, req Request, logf Logf) (r
 		return nil, fmt.Errorf("no node binary to install")
 	}
 
-	logf("создаю сервер в регионе %s…", req.Region)
-	inst, err := vc.CreateInstance(ctx, vultr.CreateRequest{
-		Region:     req.Region,
-		Plan:       req.Plan,
-		OsID:       req.OsID,
-		Label:      req.Label,
-		Hostname:   req.Label,
-		Tags:       []string{req.Tag},
-		SSHKeys:    []string{req.SSHKeyID},
-		EnableIPv6: true,
-		Backups:    "disabled",
+	billing := req.Billing
+	if billing == "" {
+		billing = cloud.Hourly
+	}
+	logf("создаю сервер: %s:%s, оплата %s…", p.Name(), req.Location, billing)
+	inst, err := p.Create(ctx, cloud.Spec{
+		Location: req.Location,
+		Label:    req.Label,
+		SSHKeyID: req.SSHKeyID,
+		Billing:  billing,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create instance: %w", err)
+		return nil, fmt.Errorf("create the server: %w", err)
 	}
 
 	if req.OnCreated != nil {
@@ -136,27 +134,27 @@ func Provision(ctx context.Context, vc *vultr.Client, req Request, logf Logf) (r
 		if err == nil {
 			return
 		}
-		logf("не получилось — удаляю сервер %s, чтобы он не висел на счёте", inst.ID[:8])
+		logf("не получилось — удаляю сервер %s, чтобы он не висел на счёте", short(inst.ID))
 		cleanup, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		if delErr := vc.DeleteInstance(cleanup, inst.ID); delErr != nil {
+		if delErr := p.Delete(cleanup, inst.ID); delErr != nil {
 			// Report it loudly: a leaked instance costs money.
 			err = fmt.Errorf("%w\nВНИМАНИЕ: сервер %s удалить не удалось (%v), удали его сам", err, inst.ID, delErr)
 		}
 	}()
 
-	logf("сервер %s создан, жду адрес…", inst.ID[:8])
+	logf("сервер %s создан, жду адрес…", short(inst.ID))
 	readyCtx, cancelReady := context.WithTimeout(ctx, ProvisionTimeout)
 	defer cancelReady()
-	inst, err = vc.WaitReady(readyCtx, inst.ID)
+	inst, err = cloud.WaitReady(readyCtx, p, inst.ID)
 	if err != nil {
 		return nil, err
 	}
-	logf("адрес %s, жду SSH…", inst.MainIP)
+	logf("адрес %s, жду SSH…", inst.IP)
 
 	sshCtx, cancelSSH := context.WithTimeout(ctx, SSHTimeout)
 	defer cancelSSH()
-	cli, err := remote.WaitForSSH(sshCtx, inst.MainIP, "root", req.Signer, req.HostKey)
+	cli, err := remote.WaitForSSH(sshCtx, inst.IP, "root", req.Signer, req.HostKey)
 	if err != nil {
 		return nil, err
 	}
@@ -195,33 +193,51 @@ func Provision(ctx context.Context, vc *vultr.Client, req Request, logf Logf) (r
 		}
 	}
 
+	region := inst.Location
+	if region == "" {
+		region = req.Location
+	}
 	return &Result{
+		Provider:   p.Name(),
 		InstanceID: inst.ID,
-		IP:         inst.MainIP,
-		IPv6:       inst.V6MainIP,
-		Region:     inst.Region,
+		IP:         inst.IP,
+		IPv6:       inst.IPv6,
+		Region:     region,
 		HostKey:    cli.HostKey(),
 		Status:     status,
 	}, nil
 }
 
-// installScript makes sure nft exists and starts the service.
+// short is an id cut down for progress messages.
+func short(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+// installScript makes sure nft and dig exist and starts the service.
 //
 // The nftables *service* is deliberately left alone: it would load
 // /etc/nftables.conf and flush the table the node installs. Only the nft
-// command itself is needed.
+// command itself is needed. dig is what the resolver check after the install
+// asks with; Vultr's Debian image has it, Cherry's does not, and without it
+// the check reads as a resolver that answers nothing.
 func installScript(extraServices []string) string {
 	var b strings.Builder
 	b.WriteString(`set -eu
-if ! command -v nft >/dev/null 2>&1; then
+need=""
+command -v nft >/dev/null 2>&1 || need="$need nftables"
+command -v dig >/dev/null 2>&1 || need="$need bind9-dnsutils"
+if [ -n "$need" ]; then
   export DEBIAN_FRONTEND=noninteractive
   installed=0
   for attempt in 1 2 3 4 5 6; do
-    if apt-get update -qq && apt-get install -y -qq nftables; then installed=1; break; fi
+    if apt-get update -qq && apt-get install -y -qq $need; then installed=1; break; fi
     echo "apt busy, retrying ($attempt)"
     sleep 5
   done
-  [ "$installed" = 1 ] || { echo "could not install nftables"; exit 1; }
+  [ "$installed" = 1 ] || { echo "could not install$need"; exit 1; }
 fi
 systemctl daemon-reload
 systemctl enable awgnode >/dev/null

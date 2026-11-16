@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"regexp"
@@ -64,6 +65,9 @@ func checkScript(dns string) string {
 	domains := append([]string{foreignProbe}, localProbes...)
 	var b strings.Builder
 	b.WriteString("set -u\n")
+	// Without dig every question below comes back empty, which would read as
+	// a resolver that answers nothing. Say so instead.
+	b.WriteString(`command -v dig >/dev/null 2>&1 || echo "NODIG"` + "\n")
 	for _, d := range domains {
 		fmt.Fprintf(&b, `echo "Q %[1]s $(dig +short +time=5 +tries=1 @%[2]s %[1]s A | tr '\n' ' ')"`+"\n", d, dns)
 	}
@@ -80,6 +84,8 @@ func ParseSplitCheck(out string, stand netip.Prefix) (SplitReport, error) {
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		switch {
+		case line == "NODIG":
+			return rep, errors.New("на сервере нет dig: резолвер проверить нечем (пакет bind9-dnsutils не встал)")
 		case line == "MAP":
 			inMap = true
 		case inMap:

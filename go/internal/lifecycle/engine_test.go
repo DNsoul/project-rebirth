@@ -163,7 +163,7 @@ func TestTheSuccessorBecomesAManagerInItsOwnRight(t *testing.T) {
 		t.Errorf("the successor's life began at %d, not now (%d)", next.CreatedAt, r.clock.Now().Unix())
 	}
 	// It carries on with the same credentials, key line and policy.
-	if next.VultrKey != r.cfg.VultrKey || next.ServerSeed != r.cfg.ServerSeed || next.Cert != r.cfg.Cert {
+	if next.Clouds["vultr"].Key != r.cfg.Clouds["vultr"].Key || next.ServerSeed != r.cfg.ServerSeed || next.Cert != r.cfg.Cert {
 		t.Error("the successor lost the credentials or the certificate")
 	}
 	if next.Policy != r.cfg.Policy {
@@ -342,26 +342,30 @@ func TestRegionChoice(t *testing.T) {
 	r := newRig(t)
 	r.cfg.Region = "sto"
 
-	// Any other region by default, never the current one.
+	// Any other place by default, never the current one.
 	for i := 0; i < 20; i++ {
 		r.eng.Intn = func(n int) int { return i % n }
-		got, err := r.eng.chooseRegion("")
+		got, err := r.eng.choosePlaces(MoveRequest{Trigger: TriggerAge})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got == "sto" {
-			t.Fatalf("chose the current region")
+		for _, p := range got {
+			if p.ID == "vultr:sto" {
+				t.Fatalf("chose the current place")
+			}
 		}
 	}
 
-	// An explicit region is honoured, including the current one.
-	for _, want := range []string{"waw", "sto"} {
-		if got, err := r.eng.chooseRegion(want); err != nil || got != want {
-			t.Errorf("chooseRegion(%q) = %q, %v", want, got, err)
+	// An explicit place is honoured, including the current one, and a bare
+	// city means that city.
+	for want, place := range map[string]string{"waw": "vultr:waw", "sto": "vultr:sto", "vultr:fra": "vultr:fra"} {
+		got, err := r.eng.choosePlaces(MoveRequest{Trigger: TriggerCommand, Region: want})
+		if err != nil || len(got) != 1 || got[0].ID != place {
+			t.Errorf("choosePlaces(%q) = %v, %v", want, got, err)
 		}
 	}
 	// An unknown one is refused rather than guessed at.
-	if _, err := r.eng.chooseRegion("moon"); err == nil {
+	if _, err := r.eng.choosePlaces(MoveRequest{Trigger: TriggerCommand, Region: "moon"}); err == nil {
 		t.Error("an unknown region was accepted")
 	}
 }
@@ -369,8 +373,8 @@ func TestRegionChoice(t *testing.T) {
 func TestAMoveToARequestedRegionGoesThere(t *testing.T) {
 	r := newRig(t)
 	res := mustMove(t, r, MoveRequest{Trigger: TriggerCommand, Region: "fra"})
-	if res.Region != "fra" || r.prov.reqs[0].Region != "fra" {
-		t.Errorf("went to %s / %s, asked for fra", res.Region, r.prov.reqs[0].Region)
+	if res.Region != "fra" || r.prov.reqs[0].Place.Location != "fra" {
+		t.Errorf("went to %s / %s, asked for fra", res.Region, r.prov.reqs[0].Place)
 	}
 }
 

@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"awgrotator/internal/awg"
+	"awgrotator/internal/cloud"
 	"awgrotator/internal/config"
 	"awgrotator/internal/proto"
 	"awgrotator/internal/store"
-	"awgrotator/internal/vultr"
 )
 
 func cmdDown(args []string) error {
@@ -40,16 +40,19 @@ func cmdDown(args []string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	vc := vultr.New(secrets.VultrAPIKey)
-
-	// Only ever look at instances carrying our tag, so nothing else on the
-	// account can be deleted by accident.
-	ours, err := vc.InstancesByTag(ctx, config.InstanceTag)
+	clouds, err := openClouds(st, secrets, config.InstanceTag)
 	if err != nil {
 		return err
 	}
 
-	var targets []vultr.Instance
+	// Only ever look at servers carrying our tag, so nothing else on the
+	// accounts can be deleted by accident.
+	ours, err := clouds.List(ctx)
+	if err != nil {
+		return err
+	}
+
+	var targets []cloud.Server
 	switch {
 	case *all:
 		targets = ours
@@ -64,7 +67,7 @@ func cmdDown(args []string) error {
 		}
 	case st.Server.ID != "":
 		for _, i := range ours {
-			if i.ID == st.Server.ID {
+			if i.ID == st.Server.ID && i.Provider == st.Server.Provider {
 				targets = append(targets, i)
 			}
 		}
@@ -77,7 +80,7 @@ func cmdDown(args []string) error {
 
 	fmt.Println("Будут удалены:")
 	for _, i := range targets {
-		fmt.Printf("  %s  %-4s %s\n", i.ID[:8], i.Region, i.MainIP)
+		fmt.Printf("  %s\n", serverLine(i))
 	}
 	if !*yes {
 		return errors.New("это необратимо. Если согласен — повтори с -yes")
@@ -85,13 +88,13 @@ func cmdDown(args []string) error {
 
 	var failed []string
 	for _, i := range targets {
-		if err := vc.DeleteInstance(ctx, i.ID); err != nil {
-			fmt.Printf("  %s: %v\n", i.ID[:8], err)
+		if err := clouds.Delete(ctx, i.Provider, i.ID); err != nil {
+			fmt.Printf("  %s: %v\n", i.Ref(), err)
 			failed = append(failed, i.ID)
 			continue
 		}
-		fmt.Printf("  %s удалён\n", i.ID[:8])
-		if i.ID == st.Server.ID {
+		fmt.Printf("  %s удалён\n", i.Ref())
+		if i.ID == st.Server.ID && i.Provider == st.Server.Provider {
 			st.Server = store.Server{}
 			st.ServerHostKey = ""
 		}

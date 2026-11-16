@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
+	"awgrotator/internal/cloud"
 	"awgrotator/internal/deploy"
 	"awgrotator/internal/enroll"
 	"awgrotator/internal/node"
 	"awgrotator/internal/splitplan"
 	"awgrotator/internal/tunneltest"
-	"awgrotator/internal/vultr"
 )
 
 // Where the manager's program and service live on a server.
@@ -45,35 +45,6 @@ WantedBy=multi-user.target
 `, ManagerBinaryPath, DefaultConfigPath)
 }
 
-// ---- cloud
-
-// VultrCloud is the engine's view of the cloud: only what carries our tag.
-//
-// Listing is filtered by the provider, not afterwards, so an instance without
-// the tag is not merely skipped but never seen. That is what makes it
-// impossible for the manager to delete a server that belongs to someone else,
-// or to the operator's other projects on the same account.
-type VultrCloud struct {
-	Client *vultr.Client
-	Tag    string
-}
-
-// Tagged implements Cloud.
-func (c *VultrCloud) Tagged(ctx context.Context) ([]vultr.Instance, error) {
-	return c.Client.InstancesByTag(ctx, c.Tag)
-}
-
-// Delete implements Cloud. A server that is already gone counts as deleted:
-// the aim is that it does not exist, and failing because someone got there
-// first would only make a retry loop of it.
-func (c *VultrCloud) Delete(ctx context.Context, id string) error {
-	err := c.Client.DeleteInstance(ctx, id)
-	if err != nil && strings.Contains(err.Error(), "404") {
-		return nil
-	}
-	return err
-}
-
 // ---- provisioning
 
 // DeployProvisioner builds a server with the same code the operator's tool
@@ -81,7 +52,7 @@ func (c *VultrCloud) Delete(ctx context.Context, id string) error {
 // compiler, and does not need one to copy itself.
 type DeployProvisioner struct {
 	Cfg    *Config
-	Client *vultr.Client
+	Clouds cloud.Set
 
 	// NodeBinary and ManagerBinary are the paths of the programs to copy.
 	// They default to where they are installed.
@@ -93,6 +64,11 @@ type DeployProvisioner struct {
 
 // Provision implements Provisioner.
 func (p *DeployProvisioner) Provision(ctx context.Context, req ProvisionRequest) (*deploy.Result, error) {
+	provider, err := p.Clouds.Get(req.Place.Provider)
+	if err != nil {
+		return nil, err
+	}
+	settings := p.Cfg.Clouds[req.Place.Provider]
 	signer, err := p.Cfg.SSHSigner()
 	if err != nil {
 		return nil, err
@@ -116,13 +92,11 @@ func (p *DeployProvisioner) Provision(ctx context.Context, req ProvisionRequest)
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return deploy.Provision(ctx, p.Client, deploy.Request{
-		Region:    req.Region,
-		Plan:      p.Cfg.Plan,
-		OsID:      p.Cfg.OsID,
-		Tag:       p.Cfg.Tag,
+	return deploy.Provision(ctx, provider, deploy.Request{
+		Location:  req.Place.Location,
+		Billing:   req.Billing,
 		Label:     req.Label,
-		SSHKeyID:  p.Cfg.SSHKeyID,
+		SSHKeyID:  settings.SSHKeyID,
 		Binary:    nodeBin,
 		Config:    req.Node,
 		Files:     files,

@@ -385,6 +385,8 @@ func (b *Bot) press(ctx context.Context, q *telegram.CallbackQuery) {
 			"Да, переехать", "mv!:"+nonce(), "m:service"))
 	case "mr":
 		edit(b.regionView())
+	case "mp":
+		edit(b.monthlyView(arg))
 	case "mv!":
 		id, region, _ := strings.Cut(arg, ":")
 		notice = b.act(chat, lifecycle.Action{Kind: lifecycle.ActMove, ID: id, Region: region},

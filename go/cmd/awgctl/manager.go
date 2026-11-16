@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"awgrotator/internal/cloud"
 	"awgrotator/internal/config"
 	"awgrotator/internal/deploy"
 	"awgrotator/internal/fleet"
@@ -16,7 +17,6 @@ import (
 	"awgrotator/internal/proto"
 	"awgrotator/internal/remote"
 	"awgrotator/internal/store"
-	"awgrotator/internal/vultr"
 )
 
 // certLifetime is how long the server key's certificate is valid.
@@ -28,8 +28,8 @@ const certLifetime = 365 * 24 * time.Hour
 
 // buildManagerConfig assembles what a server needs to look after itself,
 // from the operator's state and credentials.
-func buildManagerConfig(st *store.State, secrets config.Secrets, sshKeyID string,
-	inst *vultr.Instance, cert proto.Cert, now time.Time) (*lifecycle.Config, error) {
+func buildManagerConfig(st *store.State, secrets config.Secrets,
+	inst *cloud.Server, place lifecycle.PlaceConfig, cert proto.Cert, now time.Time) (*lifecycle.Config, error) {
 
 	trust, err := st.Trust()
 	if err != nil {
@@ -38,11 +38,14 @@ func buildManagerConfig(st *store.State, secrets config.Secrets, sshKeyID string
 	cfg := &lifecycle.Config{
 		Version:     lifecycle.ConfigVersion,
 		InstanceID:  inst.ID,
-		IP:          inst.MainIP,
-		Region:      inst.Region,
+		IP:          inst.IP,
+		Region:      place.Place().Location,
+		Provider:    place.Place().Provider,
+		Billing:     place.Billing,
 		CreatedAt:   now.Unix(),
 		Generation:  st.Generation + 1,
-		VultrKey:    secrets.VultrAPIKey,
+		Clouds:      managerClouds(st, secrets),
+		Places:      placesFor(managerClouds(st, secrets)),
 		GitHubToken: secrets.GitHubToken,
 		GistID:      st.GistID,
 		GitLab:      gitLabSyncFor(st),
@@ -53,17 +56,25 @@ func buildManagerConfig(st *store.State, secrets config.Secrets, sshKeyID string
 		RootPub:     trust.RootPub,
 		BackupPub:   trust.BackupPub,
 		SSHPrivate:  st.SSHPrivate,
-		SSHKeyID:    sshKeyID,
-		Plan:        config.Plan,
-		OsID:        config.OsID,
-		Tag:         config.InstanceTag,
-		Regions:     config.Regions,
 		Policy:      lifecycle.DefaultPolicy(),
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("настройки менеджера: %w", err)
 	}
 	return cfg, nil
+}
+
+// managerClouds are the providers a server is given: those the operator has
+// set up and registered our key with, so that a replacement built there
+// accepts the key.
+func managerClouds(st *store.State, secrets config.Secrets) map[string]cloud.Settings {
+	out := cloudSettings(st, secrets, config.InstanceTag)
+	for name, s := range out {
+		if s.SSHKeyID == "" {
+			delete(out, name)
+		}
+	}
+	return out
 }
 
 // telegramFor is what a server's configuration says about the operator's bot:
@@ -126,16 +137,16 @@ func cmdCommand(args []string) error {
 	case "move":
 		action = proto.ActionMove
 	case "move-region":
+		// Every place there can be; the server itself checks against the
+		// places it was given, which include Cherry only once it is set up.
+		all := placesFor(map[string]cloud.Settings{"cherry": {}})
 		if len(rest) < 2 {
-			return fmt.Errorf("нужен регион из списка: %v", config.Regions)
+			return fmt.Errorf("нужно место, например vultr:sto или cherry:ams; есть: %s",
+				strings.Join((&lifecycle.Config{Places: all}).PlaceIDs(), ", "))
 		}
 		action, arg = proto.ActionMoveRegion, rest[1]
-		known := false
-		for _, r := range config.Regions {
-			known = known || r == arg
-		}
-		if !known {
-			return fmt.Errorf("регион %q не из списка: %v", arg, config.Regions)
+		if _, err := (&lifecycle.Config{Places: all}).FindPlace(arg); err != nil {
+			return err
 		}
 	case "status":
 		action = proto.ActionStatus
@@ -170,12 +181,16 @@ func cmdCommand(args []string) error {
 	// previous server running with -keep-old.
 	if (action == proto.ActionMove || action == proto.ActionMoveRegion) && !*force {
 		lookCtx, lookCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		ours, err := vultr.New(secrets.VultrAPIKey).InstancesByTag(lookCtx, config.InstanceTag)
+		var ours []cloud.Server
+		clouds, err := openClouds(st, secrets, config.InstanceTag)
+		if err == nil {
+			ours, err = clouds.List(lookCtx)
+		}
 		lookCancel()
 		if err == nil && len(ours) > 1 {
 			var list []string
 			for _, in := range ours {
-				list = append(list, fmt.Sprintf("%s (%s, %s)", in.ID[:8], in.Region, in.MainIP))
+				list = append(list, fmt.Sprintf("%s (%s:%s, %s)", shortID(in.ID), in.Provider, in.Location, in.IP))
 			}
 			return fmt.Errorf("живых серверов с меткой %d: %s.\n"+
 				"Каждый из них читает команды и выполнит этот переезд, так что серверов получится больше нужного.\n"+
@@ -325,18 +340,22 @@ func refreshServer(ctx context.Context, root string, st *store.State, secrets co
 		changed = true
 	}
 
-	instances, err := vultr.New(secrets.VultrAPIKey).InstancesByTag(ctx, config.InstanceTag)
+	clouds, err := openClouds(st, secrets, config.InstanceTag)
+	if err != nil {
+		return changed, err
+	}
+	instances, err := clouds.List(ctx)
 	if err != nil {
 		return changed, err
 	}
 	found := false
 	for _, inst := range instances {
-		if inst.MainIP != ip {
+		if inst.IP != ip {
 			continue
 		}
 		found = true
-		if st.Server.ID != inst.ID {
-			st.Server = store.Server{ID: inst.ID, Region: inst.Region, IP: inst.MainIP, CreatedAt: time.Now().Unix()}
+		if st.Server.ID != inst.ID || st.Server.Provider != inst.Provider {
+			st.Server = store.Server{Provider: inst.Provider, ID: inst.ID, Region: inst.Location, IP: inst.IP, CreatedAt: time.Now().Unix()}
 			// A different machine has a different host key. It is trusted on
 			// first use again.
 			st.ServerHostKey = ""
@@ -442,22 +461,24 @@ func cmdGC(args []string) error {
 	if _, err := refreshServer(ctx, root, st, secrets); err != nil {
 		return fmt.Errorf("не удалось узнать, какой сервер опубликован, поэтому ничего не трогаю: %w", err)
 	}
-	vc := vultr.New(secrets.VultrAPIKey)
-	instances, err := vc.InstancesByTag(ctx, config.InstanceTag)
+	clouds, err := openClouds(st, secrets, config.InstanceTag)
+	if err != nil {
+		return err
+	}
+	instances, err := clouds.List(ctx)
 	if err != nil {
 		return err
 	}
 
-	var orphans []vultr.Instance
+	var orphans []cloud.Server
 	for _, inst := range instances {
-		created, _ := time.Parse(time.RFC3339, inst.DateCreated)
 		switch {
-		case inst.ID == st.Server.ID:
-			fmt.Printf("  %s  %-4s %-15s опубликован, текущий\n", inst.ID[:8], inst.Region, inst.MainIP)
-		case !created.IsZero() && time.Since(created) < orphanMinAge:
-			fmt.Printf("  %s  %-4s %-15s создан недавно, возможно строится сейчас\n", inst.ID[:8], inst.Region, inst.MainIP)
+		case inst.ID == st.Server.ID && inst.Provider == st.Server.Provider:
+			fmt.Printf("  %s  опубликован, текущий\n", serverLine(inst))
+		case !inst.Created.IsZero() && time.Since(inst.Created) < orphanMinAge:
+			fmt.Printf("  %s  создан недавно, возможно строится сейчас\n", serverLine(inst))
 		default:
-			fmt.Printf("  %s  %-4s %-15s НЕ опубликован, лишний\n", inst.ID[:8], inst.Region, inst.MainIP)
+			fmt.Printf("  %s  НЕ опубликован, лишний\n", serverLine(inst))
 			orphans = append(orphans, inst)
 		}
 	}
@@ -469,11 +490,11 @@ func cmdGC(args []string) error {
 		return fmt.Errorf("лишних серверов: %d. Чтобы удалить, добавь -yes", len(orphans))
 	}
 	for _, inst := range orphans {
-		if err := vc.DeleteInstance(ctx, inst.ID); err != nil {
-			fmt.Printf("  %s: %v\n", inst.ID[:8], err)
+		if err := clouds.Delete(ctx, inst.Provider, inst.ID); err != nil {
+			fmt.Printf("  %s: %v\n", inst.Ref(), err)
 			continue
 		}
-		fmt.Printf("  %s удалён\n", inst.ID[:8])
+		fmt.Printf("  %s удалён\n", inst.Ref())
 	}
 	return nil
 }

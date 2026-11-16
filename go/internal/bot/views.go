@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"awgrotator/internal/cloud"
 	"awgrotator/internal/lifecycle"
 	"awgrotator/internal/node"
 	"awgrotator/internal/proto"
@@ -37,6 +38,7 @@ var regionNames = map[string]string{
 	"waw": "Варшава",
 	"fra": "Франкфурт",
 	"ams": "Амстердам",
+	"sia": "Шяуляй",
 }
 
 func regionName(code string) string {
@@ -44,6 +46,29 @@ func regionName(code string) string {
 		return n
 	}
 	return code
+}
+
+var providerNames = map[string]string{
+	"vultr":  "Vultr",
+	"cherry": "Cherry",
+}
+
+func providerName(name string) string {
+	if n, ok := providerNames[name]; ok {
+		return n
+	}
+	return name
+}
+
+// placeLabel is a place as the operator reads it: the city, who hosts it, and
+// a note when it is paid by the month.
+func placeLabel(p lifecycle.PlaceConfig) string {
+	pl := p.Place()
+	label := regionName(pl.Location) + " · " + providerName(pl.Provider)
+	if p.Billing == cloud.Monthly {
+		label += ", месяц"
+	}
+	return label
 }
 
 func healthWords(v lifecycle.Verdict) string {
@@ -109,7 +134,10 @@ func (b *Bot) statusView(ctx context.Context) view {
 	s := b.Manager.Snapshot()
 	now := b.now()
 	var out strings.Builder
-	fmt.Fprintf(&out, "Сервер: %s, поколение %d, работает %s.\n", regionName(s.Region), s.Generation, duration(now.Sub(s.CreatedAt)))
+	fmt.Fprintf(&out, "Сервер: %s · %s, поколение %d, работает %s.\n", regionName(s.Region), providerName(s.Provider), s.Generation, duration(now.Sub(s.CreatedAt)))
+	if !s.PaidUntil.IsZero() {
+		fmt.Fprintf(&out, "Оплачен помесячно, до %s.\n", stamp(s.PaidUntil))
+	}
 	fmt.Fprintf(&out, "Состояние: %s.\n", healthWords(s.Health))
 	if s.Moving {
 		out.WriteString("Сейчас идёт переезд.\n")
@@ -311,11 +339,16 @@ func (b *Bot) regionView() view {
 	id := nonce()
 	var row []telegram.Button
 	var kb telegram.Keyboard
-	for _, r := range s.Regions {
-		if r == s.Region {
+	for _, p := range s.Places {
+		if pl := p.Place(); pl.Provider == s.Provider && pl.Location == s.Region {
 			continue
 		}
-		row = append(row, btn(regionName(r), "mv!:"+id+":"+r))
+		// A monthly place is asked about once more: it spends a month up front.
+		data := "mv!:" + id + ":" + p.ID
+		if p.Billing == cloud.Monthly {
+			data = "mp:" + p.ID
+		}
+		row = append(row, btn(placeLabel(p), data))
 		if len(row) == 2 {
 			kb = append(kb, row)
 			row = nil
@@ -325,7 +358,19 @@ func (b *Bot) regionView() view {
 		kb = append(kb, row)
 	}
 	kb = append(kb, []telegram.Button{btn("Отмена", "m:service")})
-	return view{text: fmt.Sprintf("Куда переехать? Сейчас: %s.", regionName(s.Region)), kb: kb}
+	return view{text: fmt.Sprintf("Куда переехать? Сейчас: %s · %s.", regionName(s.Region), providerName(s.Provider)), kb: kb}
+}
+
+// monthlyView asks once more before a move to a place paid by the month.
+func (b *Bot) monthlyView(place string) view {
+	s := b.Manager.Snapshot()
+	for _, p := range s.Places {
+		if p.ID == place {
+			return confirmView(fmt.Sprintf("Переехать в %s? Там оплата помесячная: месяц спишется вперёд сразу, и при раннем переезде остаток не вернётся. Сами туда переезды не идут, только по вашей команде.", placeLabel(p)),
+				"Да, оплатить и переехать", "mv!:"+nonce()+":"+p.ID, "mr")
+		}
+	}
+	return b.regionView()
 }
 
 func confirmView(question, yes, yesData, noData string) view {

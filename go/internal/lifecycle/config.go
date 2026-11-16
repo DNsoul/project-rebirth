@@ -22,11 +22,12 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"awgrotator/internal/cloud"
 	"awgrotator/internal/proto"
 )
 
 // ConfigVersion is the on-disk layout version of the manager's configuration.
-const ConfigVersion = 1
+const ConfigVersion = 2
 
 // Where the manager keeps things on a server.
 const (
@@ -136,18 +137,25 @@ func (p Policy) MinGrace() time.Duration { return time.Duration(p.MinGraceMinute
 type Config struct {
 	Version int `json:"version"`
 
-	// Identity of this server.
-	InstanceID string `json:"instance_id"`
-	IP         string `json:"ip"`
-	Region     string `json:"region"`
-	CreatedAt  int64  `json:"created_at"`
+	// Identity of this server. Region is the city, our own code for it,
+	// which is what the apps are told; Provider is who hosts it and Billing
+	// how it is paid for.
+	InstanceID string        `json:"instance_id"`
+	IP         string        `json:"ip"`
+	Region     string        `json:"region"`
+	Provider   string        `json:"provider"`
+	Billing    cloud.Billing `json:"billing"`
+	CreatedAt  int64         `json:"created_at"`
 
 	// Generation counts servers in the line, starting at one.
 	Generation int `json:"generation"`
 
-	// Credentials. The Vultr key belongs to a sub-user limited to compute,
-	// and the GitHub token to gists only.
-	VultrKey    string `json:"vultr_key"`
+	// Clouds are the hosting providers this line uses, with their keys, and
+	// Places where a new server may go and how each is paid for.
+	Clouds map[string]cloud.Settings `json:"clouds"`
+	Places []PlaceConfig             `json:"places"`
+
+	// Credentials. The GitHub token reaches gists only.
 	GitHubToken string `json:"github_token"`
 	GistID      string `json:"gist_id"`
 
@@ -170,16 +178,18 @@ type Config struct {
 	RootPub    string `json:"root_pub"`
 	BackupPub  string `json:"backup_pub"`
 
-	// SSHPrivate reaches new servers, and SSHKeyID is its registration with
-	// the cloud so that new servers accept it.
+	// SSHPrivate reaches new servers. Its registration with each provider is
+	// in that provider's settings.
 	SSHPrivate string `json:"ssh_private_key"`
-	SSHKeyID   string `json:"ssh_key_id"`
 
-	// What a new server is made from.
-	Plan    string   `json:"plan"`
-	OsID    int      `json:"os_id"`
-	Tag     string   `json:"tag"`
-	Regions []string `json:"regions"`
+	// Version 1 kept a single provider, Vultr, in these fields. They are read
+	// only to be moved into Clouds and Places, and are never written.
+	LegacyVultrKey string   `json:"vultr_key,omitempty"`
+	LegacySSHKeyID string   `json:"ssh_key_id,omitempty"`
+	LegacyPlan     string   `json:"plan,omitempty"`
+	LegacyOsID     int      `json:"os_id,omitempty"`
+	LegacyTag      string   `json:"tag,omitempty"`
+	LegacyRegions  []string `json:"regions,omitempty"`
 
 	Policy Policy `json:"policy"`
 
@@ -248,20 +258,17 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("manager configuration version %d, this build understands %d", c.Version, ConfigVersion)
 	}
 	for name, value := range map[string]string{
-		"instance id": c.InstanceID, "region": c.Region, "vultr key": c.VultrKey,
+		"instance id": c.InstanceID, "region": c.Region, "provider": c.Provider,
 		"github token": c.GitHubToken, "gist id": c.GistID, "server seed": c.ServerSeed,
 		"content key": c.ContentKey, "root key": c.RootPub, "backup key": c.BackupPub,
-		"ssh key": c.SSHPrivate, "ssh key id": c.SSHKeyID, "plan": c.Plan, "tag": c.Tag,
+		"ssh key": c.SSHPrivate,
 	} {
 		if value == "" {
 			return fmt.Errorf("manager configuration has no %s", name)
 		}
 	}
-	if c.OsID == 0 {
-		return errors.New("manager configuration has no os id")
-	}
-	if len(c.Regions) < 2 {
-		return errors.New("manager configuration needs at least two regions to move between")
+	if err := c.validateClouds(); err != nil {
+		return err
 	}
 	if c.Generation < 1 {
 		return errors.New("manager configuration has no generation number")
@@ -356,6 +363,7 @@ func ParseConfig(raw []byte) (*Config, error) {
 	if err := json.Unmarshal(raw, &c); err != nil {
 		return nil, fmt.Errorf("the manager configuration is not valid JSON: %w", err)
 	}
+	c.migrate()
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}

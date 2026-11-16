@@ -48,7 +48,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 	s.GistID = "deadbeef"
 	s.GistOwner = "someone"
-	s.Server = Server{ID: "abc", Region: "sto", IP: "203.0.113.9"}
+	s.Server = Server{Provider: "cherry", ID: "abc", Region: "sto", IP: "203.0.113.9"}
 
 	if err := s.Save(root); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -72,6 +72,31 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 	if got.SSHPrivate != s.SSHPrivate {
 		t.Error("ssh key did not survive the round trip")
+	}
+}
+
+// A state written before there was a second provider: the server and the
+// SSH key were at Vultr, and are read as such.
+func TestOldStateIsReadAsVultrs(t *testing.T) {
+	root := t.TempDir()
+	s, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Server = Server{ID: "abc", Region: "sto", IP: "203.0.113.9"}
+	s.VultrSSHKeyID = "key-1"
+	if err := s.Save(root); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Server.Provider != "vultr" {
+		t.Errorf("server provider = %q", got.Server.Provider)
+	}
+	if got.SSHKeyIDs["vultr"] != "key-1" || got.VultrSSHKeyID != "" {
+		t.Errorf("ssh keys = %v, old field %q", got.SSHKeyIDs, got.VultrSSHKeyID)
 	}
 }
 

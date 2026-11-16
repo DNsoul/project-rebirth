@@ -19,8 +19,9 @@ const (
 type MoveRequest struct {
 	Trigger Trigger
 
-	// Region is where the operator asked the new server to be, or empty for
-	// any region other than this one.
+	// Region is where the operator asked the new server to be: a place
+	// (provider:city) or a bare city. Empty means anywhere an automatic move
+	// may go other than here.
 	Region string
 }
 
@@ -32,6 +33,11 @@ type Inputs struct {
 
 	// AgeJitter is the random extra added to the age limit, drawn once.
 	AgeJitter time.Duration
+
+	// PaidUntil is when a monthly server's paid month ends, zero for one paid
+	// by the hour. A monthly server leaves before then, whatever its age
+	// limit says, so that the next month is not charged.
+	PaidUntil time.Time
 
 	// Attempts are the times of earlier move attempts, whatever their outcome.
 	Attempts []time.Time
@@ -81,7 +87,7 @@ func Decide(p Policy, in Inputs) Decision {
 // autoTrigger says which automatic condition applies, if any.
 func autoTrigger(p Policy, in Inputs) (Trigger, string) {
 	age := in.Now.Sub(in.CreatedAt)
-	limit := p.MaxAge() + in.AgeJitter
+	limit := ageLimit(p, in.CreatedAt, in.AgeJitter, in.PaidUntil)
 
 	switch {
 	case p.AutoAge && age >= limit:
@@ -127,11 +133,23 @@ func attemptsInLast(attempts []time.Time, now time.Time, window time.Duration) i
 
 // NextAutoMove returns when the age trigger will fire, for the status. The
 // second value is false when automatic moves by age are off.
-func NextAutoMove(p Policy, createdAt time.Time, jitter time.Duration) (time.Time, bool) {
+func NextAutoMove(p Policy, createdAt time.Time, jitter time.Duration, paidUntil time.Time) (time.Time, bool) {
 	if !p.AutoAge {
 		return time.Time{}, false
 	}
-	return createdAt.Add(p.MaxAge() + jitter), true
+	return createdAt.Add(ageLimit(p, createdAt, jitter, paidUntil)), true
+}
+
+// ageLimit is how old the server may get: the policy's limit, and for a
+// monthly server no later than MonthlyMargin before its paid month ends.
+func ageLimit(p Policy, createdAt time.Time, jitter time.Duration, paidUntil time.Time) time.Duration {
+	limit := p.MaxAge() + jitter
+	if !paidUntil.IsZero() {
+		if paid := paidUntil.Add(-MonthlyMargin).Sub(createdAt); paid < limit {
+			limit = paid
+		}
+	}
+	return limit
 }
 
 func roundDays(d time.Duration) string {

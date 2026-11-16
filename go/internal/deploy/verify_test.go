@@ -125,3 +125,13 @@ table ip awgsplit {
 		t.Errorf("MapEntries = %d for an empty map, want 0", rep.MapEntries)
 	}
 }
+
+func TestACheckWithoutDigSaysSoInsteadOfBlamingTheResolver(t *testing.T) {
+	if !strings.Contains(checkScript("10.8.0.1"), "NODIG") {
+		t.Fatal("the check does not look for dig first")
+	}
+	_, err := ParseSplitCheck("NODIG\nQ github.com \nQ yandex.ru \nMAP\n", stand)
+	if err == nil || !strings.Contains(err.Error(), "dig") {
+		t.Fatalf("err = %v", err)
+	}
+}

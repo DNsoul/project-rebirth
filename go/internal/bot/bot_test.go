@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"awgrotator/internal/awg"
+	"awgrotator/internal/cloud"
 	"awgrotator/internal/enroll"
 	"awgrotator/internal/lifecycle"
 	"awgrotator/internal/node"
@@ -151,7 +152,11 @@ func newRig(t *testing.T) *rig {
 	r.mgr = &fakeManager{snap: lifecycle.Snapshot{
 		Current: true, CurrentKnown: true, Region: "sto", Generation: 7,
 		CreatedAt: r.now.Add(-50 * time.Hour), Health: lifecycle.Healthy,
-		Regions: []string{"sto", "waw", "fra"}, AutoAge: true,
+		Provider: "vultr", Billing: cloud.Hourly, AutoAge: true,
+		Places: []lifecycle.PlaceConfig{
+			{ID: "vultr:sto", Billing: cloud.Hourly}, {ID: "vultr:waw", Billing: cloud.Hourly},
+			{ID: "vultr:fra", Billing: cloud.Hourly}, {ID: "cherry:ams", Billing: cloud.Monthly},
+		},
 	}}
 	r.bot = &Bot{
 		API: r.api, Manager: r.mgr, Owners: []int64{owner},
@@ -393,10 +398,10 @@ func TestAMoveToAChosenRegionNamesIt(t *testing.T) {
 	var waw string
 	for _, row := range edits[0].kb {
 		for _, b := range row {
-			if b.Text == "Стокгольм" {
+			if strings.HasPrefix(b.Text, "Стокгольм") {
 				t.Error("the current region is offered as a destination")
 			}
-			if b.Text == "Варшава" {
+			if b.Text == "Варшава · Vultr" {
 				waw = b.Data
 			}
 		}
@@ -405,8 +410,53 @@ func TestAMoveToAChosenRegionNamesIt(t *testing.T) {
 		t.Fatalf("no button for Warsaw: %+v", edits[0].kb)
 	}
 	r.bot.handle(ctx, press(owner, waw))
-	if len(r.mgr.actions) != 1 || r.mgr.actions[0].Region != "waw" {
+	if len(r.mgr.actions) != 1 || r.mgr.actions[0].Region != "vultr:waw" {
 		t.Fatalf("actions = %+v", r.mgr.actions)
+	}
+}
+
+func TestAMonthlyPlaceIsAskedAboutOnceMore(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	r.bot.handle(ctx, press(owner, "mr"))
+	_, edits, _ := r.api.snapshot()
+	var ams string
+	for _, row := range edits[0].kb {
+		for _, b := range row {
+			if b.Text == "Амстердам · Cherry, месяц" {
+				ams = b.Data
+			}
+		}
+	}
+	if ams == "" {
+		t.Fatalf("no button for Cherry Amsterdam: %+v", edits[0].kb)
+	}
+	r.bot.handle(ctx, press(owner, ams))
+	if len(r.mgr.actions) != 0 {
+		t.Fatal("a monthly place was paid for without a second question")
+	}
+	_, edits, _ = r.api.snapshot()
+	last := edits[len(edits)-1]
+	if !strings.Contains(last.text, "помесячная") || !strings.Contains(last.text, "Амстердам · Cherry") {
+		t.Errorf("the question does not say what it costs: %q", last.text)
+	}
+	yes := last.kb[0][0].Data
+	if len(yes) > 64 {
+		t.Errorf("button data is %d bytes, Telegram allows 64", len(yes))
+	}
+	r.bot.handle(ctx, press(owner, yes))
+	if len(r.mgr.actions) != 1 || r.mgr.actions[0].Region != "cherry:ams" {
+		t.Fatalf("actions = %+v", r.mgr.actions)
+	}
+}
+
+func TestStatusSaysWhoHostsItAndUntilWhenItIsPaid(t *testing.T) {
+	r := newRig(t)
+	r.mgr.snap.Provider, r.mgr.snap.Region, r.mgr.snap.Billing = "cherry", "sia", cloud.Monthly
+	r.mgr.snap.PaidUntil = r.now.Add(20 * 24 * time.Hour)
+	text := r.bot.statusView(context.Background()).text
+	if !strings.Contains(text, "Шяуляй · Cherry") || !strings.Contains(text, "Оплачен помесячно") {
+		t.Errorf("status = %q", text)
 	}
 }
 

@@ -44,6 +44,7 @@ type Keys struct {
 
 // Server is what we know about the instance currently in service.
 type Server struct {
+	Provider  string `json:"provider,omitempty"`
 	ID        string `json:"id,omitempty"`
 	Region    string `json:"region,omitempty"`
 	IP        string `json:"ip,omitempty"`
@@ -98,17 +99,26 @@ const KindGitLab = "gitlab"
 
 // State is the whole local state file.
 type State struct {
-	Version       int    `json:"version"`
-	CreatedAt     int64  `json:"created_at"`
-	Keys          Keys   `json:"keys"`
-	Epoch         uint32 `json:"epoch"`
-	Seq           uint64 `json:"seq"`
-	GistID        string `json:"gist_id"`
-	GistOwner     string `json:"gist_owner"`
-	SSHPrivate    string `json:"ssh_private_key"`
-	SSHPublic     string `json:"ssh_public_key"`
-	VultrSSHKeyID string `json:"vultr_ssh_key_id,omitempty"`
-	Server        Server `json:"server"`
+	Version    int    `json:"version"`
+	CreatedAt  int64  `json:"created_at"`
+	Keys       Keys   `json:"keys"`
+	Epoch      uint32 `json:"epoch"`
+	Seq        uint64 `json:"seq"`
+	GistID     string `json:"gist_id"`
+	GistOwner  string `json:"gist_owner"`
+	SSHPrivate string `json:"ssh_private_key"`
+	SSHPublic  string `json:"ssh_public_key"`
+	Server     Server `json:"server"`
+
+	// SSHKeyIDs are our public key's registrations, by hosting provider.
+	// VultrSSHKeyID is where the Vultr one was kept before there were others;
+	// it is moved here on load.
+	SSHKeyIDs     map[string]string `json:"ssh_key_ids,omitempty"`
+	VultrSSHKeyID string            `json:"vultr_ssh_key_id,omitempty"`
+
+	// CherryProjectID is the Cherry project our servers live in, made by
+	// "awgctl cloud setup cherry".
+	CherryProjectID int `json:"cherry_project_id,omitempty"`
 
 	// ServerHostKey is the current server's SSH host key, trusted on first
 	// use and checked on every connection after that.
@@ -263,6 +273,18 @@ func Load(root string) (*State, error) {
 	}
 	if s.Version != Version {
 		return nil, fmt.Errorf("state file version %d, this build understands %d", s.Version, Version)
+	}
+	if s.VultrSSHKeyID != "" {
+		if s.SSHKeyIDs == nil {
+			s.SSHKeyIDs = map[string]string{}
+		}
+		if s.SSHKeyIDs["vultr"] == "" {
+			s.SSHKeyIDs["vultr"] = s.VultrSSHKeyID
+		}
+		s.VultrSSHKeyID = ""
+	}
+	if s.Server.ID != "" && s.Server.Provider == "" {
+		s.Server.Provider = "vultr"
 	}
 	return &s, nil
 }

@@ -2,20 +2,18 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
-	"math/big"
 	"time"
 
+	"awgrotator/internal/cloud"
 	"awgrotator/internal/config"
 	"awgrotator/internal/deploy"
 	"awgrotator/internal/fleet"
 	"awgrotator/internal/lifecycle"
 	"awgrotator/internal/proto"
 	"awgrotator/internal/store"
-	"awgrotator/internal/vultr"
 )
 
 // How long a published document stays valid. The certificate, issued once for
@@ -28,7 +26,8 @@ const oldServerGrace = 15 * time.Minute
 
 func cmdUp(args []string) error {
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
-	wantRegion := fs.String("region", "", "регион Vultr (по умолчанию случайный из списка)")
+	wantPlace := fs.String("place", "", "место: хостер:город, например vultr:sto или cherry:ams (по умолчанию случайное почасовое)")
+	wantRegion := fs.String("region", "", "город Vultr (то же, что -place vultr:<город>)")
 	keepOld := fs.Bool("keep-old", false, "не удалять предыдущий сервер")
 	noSplit := fs.Bool("no-split", false, "полный туннель: всё через сервер, без разделения по сайтам")
 	noManager := fs.Bool("no-manager", false, "не ставить менеджер: сервер не будет следить за собой и переезжать сам")
@@ -66,18 +65,42 @@ func cmdUp(args []string) error {
 	}
 	logf("  %d КБ", len(binary)/1024)
 
-	region, err := pickRegion(*wantRegion, st.Server.Region)
+	want := *wantPlace
+	if want == "" && *wantRegion != "" {
+		want = "vultr:" + *wantRegion
+	}
+	clouds, err := openClouds(st, secrets, config.InstanceTag)
 	if err != nil {
 		return err
+	}
+	place, err := pickPlace(want, placesFor(cloudSettings(st, secrets, config.InstanceTag)),
+		cloud.Place{Provider: st.Server.Provider, Location: st.Server.Region})
+	if err != nil {
+		return err
+	}
+	region := place.Place().Location
+	provider, err := clouds.Get(place.Place().Provider)
+	if err != nil {
+		return err
+	}
+	if place.Billing == cloud.Monthly {
+		logf("Место %s оплачивается помесячно: месяц спишется вперёд.", place.ID)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
-	vc := vultr.New(secrets.VultrAPIKey)
-	keyID, err := ensureSSHKey(ctx, vc, st, root, logf)
-	if err != nil {
-		return err
+	// The key is registered with every provider, not only this one: the
+	// server may later build its replacement at any of them.
+	var keyID string
+	for name, p := range clouds {
+		id, err := ensureSSHKey(ctx, p, st, root, logf)
+		if err != nil {
+			return err
+		}
+		if name == provider.Name() {
+			keyID = id
+		}
 	}
 
 	// Fresh keys and obfuscation parameters for this generation, so two
@@ -128,7 +151,7 @@ func cmdUp(args []string) error {
 	// built at the same moment and published unchanged, so what the manager
 	// later republishes is exactly what clients were given.
 	var body *fleet.ConfigBody
-	var filesFor func(inst *vultr.Instance) ([]deploy.File, error)
+	var filesFor func(inst *cloud.Server) ([]deploy.File, error)
 	var services []string
 	if !*noManager {
 		logf("Собираю менеджер под Linux…")
@@ -137,9 +160,9 @@ func cmdUp(args []string) error {
 			return err
 		}
 		services = []string{lifecycle.ManagerService}
-		filesFor = func(inst *vultr.Instance) ([]deploy.File, error) {
-			body = gen.Body(inst.Region, inst.MainIP, clientNet, time.Now())
-			cfg, err := buildManagerConfig(st, secrets, keyID, inst, cert, time.Now())
+		filesFor = func(inst *cloud.Server) ([]deploy.File, error) {
+			body = gen.Body(region, inst.IP, clientNet, time.Now())
+			cfg, err := buildManagerConfig(st, secrets, inst, place, cert, time.Now())
 			if err != nil {
 				return nil, err
 			}
@@ -148,11 +171,9 @@ func cmdUp(args []string) error {
 	}
 
 	previous := st.Server
-	res, err := deploy.Provision(ctx, vc, deploy.Request{
-		Region:   region,
-		Plan:     config.Plan,
-		OsID:     config.OsID,
-		Tag:      config.InstanceTag,
+	res, err := deploy.Provision(ctx, provider, deploy.Request{
+		Location: region,
+		Billing:  place.Billing,
 		Label:    fmt.Sprintf("awg-%s-%d", region, time.Now().Unix()),
 		SSHKeyID: keyID,
 		Binary:   binary,
@@ -177,6 +198,7 @@ func cmdUp(args []string) error {
 	}
 
 	st.Server = store.Server{
+		Provider:  res.Provider,
 		ID:        res.InstanceID,
 		Region:    res.Region,
 		IP:        res.IP,
@@ -190,7 +212,7 @@ func cmdUp(args []string) error {
 
 	logf("")
 	logf("Сервер работает.")
-	logf("  Регион    %s", res.Region)
+	logf("  Место     %s:%s (%s)", res.Provider, res.Region, place.Billing)
 	logf("  Адрес     %s", res.IP)
 	logf("  Порт      %d", port)
 	logf("  Публикация №%d", st.Seq)
@@ -198,27 +220,31 @@ func cmdUp(args []string) error {
 	logf("Конфиг для клиента:")
 	logf("  awgctl client-conf -o awg.conf")
 
-	if previous.ID != "" && previous.ID != res.InstanceID {
+	prevCloud, prevErr := clouds.Get(previous.Provider)
+	if previous.ID != "" && previous.ID != res.InstanceID && prevErr != nil {
+		logf("")
+		logf("Прежний сервер %s у %s: этого хостера здесь нет, удали его сам.", shortID(previous.ID), previous.Provider)
+	} else if previous.ID != "" && previous.ID != res.InstanceID {
 		// It may already be gone: deleted by hand, or by an earlier run.
 		// Waiting out the grace period for a server that does not exist
 		// just blocks the command for a quarter of an hour.
-		if _, err := vc.Instance(context.Background(), previous.ID); err != nil {
+		if _, err := prevCloud.Get(context.Background(), previous.ID); err != nil {
 			logf("")
-			logf("Прежний сервер %s уже удалён, ждать нечего.", previous.ID[:8])
+			logf("Прежний сервер %s уже удалён, ждать нечего.", shortID(previous.ID))
 		} else if *keepOld {
 			logf("")
 			logf("Прежний сервер %s (%s) оставлен, удали сам: awgctl down -id %s",
-				previous.ID[:8], previous.IP, previous.ID)
+				shortID(previous.ID), previous.IP, previous.ID)
 		} else {
 			logf("")
 			logf("Прежний сервер %s удалю через %s, чтобы подключённые успели перейти.",
-				previous.ID[:8], oldServerGrace)
+				shortID(previous.ID), oldServerGrace)
 			logf("Не закрывай окно, либо удали потом сам: awgctl down -id %s", previous.ID)
 			select {
 			case <-time.After(oldServerGrace):
 			case <-ctx.Done():
 			}
-			if err := vc.DeleteInstance(context.Background(), previous.ID); err != nil {
+			if err := prevCloud.Delete(context.Background(), previous.ID); err != nil {
 				logf("Удалить прежний сервер не удалось: %v", err)
 				logf("Удали сам: awgctl down -id %s", previous.ID)
 			} else {
@@ -233,58 +259,6 @@ func cmdUp(args []string) error {
 // has a Go toolchain; a server building its replacement later copies the
 // binary it is already running instead.
 func buildNode(root string) ([]byte, error) { return buildLinux(root, "awgnode") }
-
-// pickRegion chooses where the new server goes, avoiding the region the
-// current one is in so a move actually changes something.
-func pickRegion(want, avoid string) (string, error) {
-	if want != "" {
-		for _, r := range config.Regions {
-			if r == want {
-				return want, nil
-			}
-		}
-		return "", fmt.Errorf("регион %q не из списка: %v", want, config.Regions)
-	}
-
-	choices := make([]string, 0, len(config.Regions))
-	for _, r := range config.Regions {
-		if r != avoid {
-			choices = append(choices, r)
-		}
-	}
-	if len(choices) == 0 {
-		choices = config.Regions
-	}
-	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(choices))))
-	if err != nil {
-		return "", err
-	}
-	return choices[n.Int64()], nil
-}
-
-// ensureSSHKey registers our public key with Vultr once and remembers its id.
-func ensureSSHKey(ctx context.Context, vc *vultr.Client, st *store.State, root string, logf func(string, ...any)) (string, error) {
-	keys, err := vc.SSHKeys(ctx)
-	if err != nil {
-		return "", fmt.Errorf("список ключей SSH: %w", err)
-	}
-	for _, k := range keys {
-		if k.SSHKey == st.SSHPublic {
-			return k.ID, nil
-		}
-	}
-
-	logf("Регистрирую ключ SSH в Vultr…")
-	id, err := vc.CreateSSHKey(ctx, "awg-rotator", st.SSHPublic)
-	if err != nil {
-		return "", fmt.Errorf("регистрация ключа SSH: %w", err)
-	}
-	st.VultrSSHKeyID = id
-	if err := st.Save(root); err != nil {
-		return "", err
-	}
-	return id, nil
-}
 
 func publishConfig(ctx context.Context, st *store.State, secrets config.Secrets, body *fleet.ConfigBody, cert proto.Cert) error {
 	if err := body.Validate(); err != nil {

@@ -109,7 +109,7 @@ func TestAMoveRegionCommandGoesToThatRegion(t *testing.T) {
 	m := started(t, r)
 
 	tick(t, m)
-	if len(r.prov.reqs) != 1 || r.prov.reqs[0].Region != "fra" {
+	if len(r.prov.reqs) != 1 || r.prov.reqs[0].Place.Location != "fra" {
 		t.Errorf("requests = %+v, want one for fra", r.prov.reqs)
 	}
 }
@@ -494,7 +494,7 @@ func TestTheStatusLeaksNoAddressesOrNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, forbidden := range []string{r.cfg.IP, "198.51.100", "198.18.", "self-instance", r.cfg.GistID, r.cfg.VultrKey, r.cfg.GitHubToken} {
+	for _, forbidden := range []string{r.cfg.IP, "198.51.100", "198.18.", "self-instance", r.cfg.GistID, r.cfg.Clouds["vultr"].Key, r.cfg.GitHubToken} {
 		if strings.Contains(text, forbidden) {
 			t.Errorf("the status contains %q:\n%s", forbidden, text)
 		}

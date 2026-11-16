@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"awgrotator/internal/cloud"
 	"awgrotator/internal/config"
 	"awgrotator/internal/gist"
 	"awgrotator/internal/proto"
@@ -47,6 +48,7 @@ func main() {
 		"auto":          cmdAuto,
 		"verify":        cmdVerify,
 		"check-keys":    cmdCheckKeys,
+		"cloud":         cmdCloud,
 		"lab-tunnel":    cmdLabTunnel,
 		"lab-up":        cmdLabUp,
 		"lab-list":      cmdLabList,
@@ -72,7 +74,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `awgctl — управление своим VPN
 
   init            создать ключи и секретный gist (один раз)
-  up              поднять новый сервер и опубликовать конфиг
+  up              поднять новый сервер и опубликовать конфиг (-place хостер:город)
   down            удалить сервер
   client-conf     вывести опубликованный конфиг клиента
   run "<cmd>"     выполнить команду на сервере по SSH
@@ -81,7 +83,8 @@ func usage() {
   split-check     проверить правила nft на сервере (без применения)
   update          обновить узел и менеджер на текущем сервере (-files — и списки,
                   -approval on|off — новые устройства ждут одобрения в боте)
-  command         приказать серверу: move | move-region <регион> | status | revoke <N>
+  command         приказать серверу: move | move-region <место> | status | revoke <N>
+                  (место — хостер:город, например cherry:ams; на помесячные — только так)
   events          показать, что сервер сообщает о себе
   watch           журнал доступности с сервера: терял ли он связь с Россией и когда (-since, -raw)
   release         объявить новую версию приложений: publish | show
@@ -92,7 +95,8 @@ func usage() {
   gc              найти и удалить лишние серверы, которые никому не нужны
   auto            включить или выключить самостоятельные переезды (-age, -block)
   verify          проверить опубликованный сервер настоящим клиентом
-  check-keys      проверить, что ключи Vultr и GitHub работают с адреса сервера
+  check-keys      проверить, что ключи Vultr, GitHub и Cherry работают с адреса сервера
+  cloud           хостеры: setup cherry — проект и ключ SSH в Cherry (один раз)
   lab-up          поднять опытный сервер (-probe — с зондом)
   lab-tunnel      замерить рукопожатие на настоящем сервере (создаёт и удаляет сервер)
   lab-list        показать опытные серверы
@@ -261,8 +265,8 @@ func cmdStatus(args []string) error {
 	fmt.Printf("\nГде лежат файлы (gist %s)\n", st.GistID)
 	reportPlaces(ctx, secrets, st)
 
-	fmt.Println("\nVultr")
-	reportVultr(ctx, secrets.VultrAPIKey, st)
+	fmt.Println("\nСерверы")
+	reportServers(ctx, secrets, st)
 	return nil
 }
 
@@ -279,27 +283,44 @@ func reportPlaces(ctx context.Context, secrets config.Secrets, st *store.State) 
 	fmt.Print(describePlaces(ctx, where))
 }
 
-func reportVultr(ctx context.Context, key string, st *store.State) {
-	vc := vultr.New(key)
-	ours, err := vc.InstancesByTag(ctx, config.InstanceTag)
+func reportServers(ctx context.Context, secrets config.Secrets, st *store.State) {
+	clouds, err := openClouds(st, secrets, config.InstanceTag)
 	if err != nil {
-		fmt.Printf("  API не отвечает: %v\n", err)
+		fmt.Printf("  %v\n", err)
 		return
 	}
-	if len(ours) == 0 {
-		fmt.Println("  наших серверов нет")
-	}
-	for _, i := range ours {
-		mark := " "
-		if i.ID == st.Server.ID {
-			mark = "*"
+	for _, name := range cloud.Names() {
+		p, ok := clouds[name]
+		if !ok {
+			fmt.Printf("  %s: не настроен\n", name)
+			continue
 		}
-		fmt.Printf("  %s %s  %-4s %-15s %s/%s\n", mark, i.ID[:8], i.Region, i.MainIP, i.Status, i.PowerStatus)
+		ours, err := p.List(ctx)
+		if err != nil {
+			fmt.Printf("  %s: API не отвечает: %v\n", name, err)
+			continue
+		}
+		if len(ours) == 0 {
+			fmt.Printf("  %s: наших серверов нет\n", name)
+		}
+		for _, i := range ours {
+			mark := " "
+			if i.ID == st.Server.ID && i.Provider == st.Server.Provider {
+				mark = "*"
+			}
+			ready := "строится"
+			if i.Ready {
+				ready = "работает"
+			}
+			fmt.Printf("  %s %s  %s\n", mark, serverLine(i), ready)
+		}
 	}
-
-	all, err := vc.Instances(ctx)
-	if err == nil && len(all) > len(ours) {
-		fmt.Printf("  (ещё %d чужих серверов на аккаунте, их не трогаем)\n", len(all)-len(ours))
+	// Other servers on the Vultr account, for reassurance that they are seen
+	// and left alone. Cherry is asked only about our own project.
+	if all, err := vultr.New(secrets.VultrAPIKey).Instances(ctx); err == nil {
+		if ours, err := clouds["vultr"].List(ctx); err == nil && len(all) > len(ours) {
+			fmt.Printf("  (ещё %d чужих серверов на аккаунте Vultr, их не трогаем)\n", len(all)-len(ours))
+		}
 	}
 }
 

@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"time"
 
+	"awgrotator/internal/cloud"
 	"awgrotator/internal/config"
 	"awgrotator/internal/remote"
 	"awgrotator/internal/store"
-	"awgrotator/internal/vultr"
 )
 
 // LabTag marks the throwaway servers used for the blocking experiment. It is
@@ -29,7 +29,7 @@ const (
 
 func cmdLabUp(args []string) error {
 	fs := flag.NewFlagSet("lab-up", flag.ExitOnError)
-	region := fs.String("region", "fra", "регион Vultr")
+	placeFlag := fs.String("place", "vultr:fra", "место: хостер:город (опытные серверы всегда почасовые)")
 	withProbe := fs.Bool("probe", false, "поставить зонд (иначе сервер остаётся пустым)")
 	label := fs.String("label", "", "метка (по умолчанию по роли и региону)")
 	udp := fs.String("udp", "53,443,34567", "UDP-порты зонда")
@@ -54,6 +54,11 @@ func cmdLabUp(args []string) error {
 	if *withProbe {
 		role = "probe"
 	}
+	where, err := cloud.ParsePlace(*placeFlag)
+	if err != nil {
+		return err
+	}
+	region := &where.Location
 	name := *label
 	if name == "" {
 		name = fmt.Sprintf("lab-%s-%s", role, *region)
@@ -72,8 +77,15 @@ func cmdLabUp(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	vc := vultr.New(secrets.VultrAPIKey)
-	keyID, err := ensureSSHKey(ctx, vc, st, root, func(f string, a ...any) { fmt.Printf(f+"\n", a...) })
+	labs, err := openClouds(st, secrets, LabTag)
+	if err != nil {
+		return err
+	}
+	p, err := labs.Get(where.Provider)
+	if err != nil {
+		return err
+	}
+	keyID, err := ensureSSHKey(ctx, p, st, root, func(f string, a ...any) { fmt.Printf(f+"\n", a...) })
 	if err != nil {
 		return err
 	}
@@ -82,27 +94,18 @@ func cmdLabUp(args []string) error {
 		return err
 	}
 
-	fmt.Printf("Создаю сервер %s в %s…\n", role, *region)
-	inst, err := vc.CreateInstance(ctx, vultr.CreateRequest{
-		Region:     *region,
-		Plan:       config.Plan,
-		OsID:       config.OsID,
-		Label:      name,
-		Hostname:   name,
-		Tags:       []string{LabTag},
-		SSHKeys:    []string{keyID},
-		EnableIPv6: true,
-		Backups:    "disabled",
-	})
+	fmt.Printf("Создаю сервер %s в %s…\n", role, where)
+	inst, err := p.Create(ctx, cloud.Spec{Location: *region, Label: name, SSHKeyID: keyID, Billing: cloud.Hourly})
 	if err != nil {
 		return err
 	}
 
-	inst, err = vc.WaitReady(ctx, inst.ID)
+	id := inst.ID
+	inst, err = cloud.WaitReady(ctx, p, id)
 	if err != nil {
-		return fmt.Errorf("сервер %s создан, но не поднялся: %w", inst.ID, err)
+		return fmt.Errorf("сервер %s создан, но не поднялся: %w", id, err)
 	}
-	fmt.Printf("  %s  %s  (IPv6 %s)\n", inst.ID[:8], inst.MainIP, inst.V6MainIP)
+	fmt.Printf("  %s  %s  (IPv6 %s)\n", shortID(inst.ID), inst.IP, inst.IPv6)
 
 	if !*withProbe {
 		fmt.Println("\nПустой контроль готов. Его никто не настраивает и ничего на нём не слушает,")
@@ -113,13 +116,13 @@ func cmdLabUp(args []string) error {
 	fmt.Println("  жду SSH…")
 	sshCtx, cancelSSH := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancelSSH()
-	cli, err := remote.WaitForSSH(sshCtx, inst.MainIP, "root", signer, "")
+	cli, err := remote.WaitForSSH(sshCtx, inst.IP, "root", signer, "")
 	if err != nil {
 		return err
 	}
 	defer cli.Close()
 
-	if err := installProbe(cli, binary, inst.MainIP, *udp); err != nil {
+	if err := installProbe(cli, binary, inst.IP, *udp); err != nil {
 		return err
 	}
 
@@ -128,8 +131,8 @@ func cmdLabUp(args []string) error {
 		fmt.Printf("  служба: %s\n", out)
 	}
 
-	fmt.Printf("\nЗонд работает на %s\n", inst.MainIP)
-	fmt.Printf("Журнал зонда: awgctl run -host %s 'tail -3 %s'\n", inst.MainIP, probeLogPath)
+	fmt.Printf("\nЗонд работает на %s\n", inst.IP)
+	fmt.Printf("Журнал зонда: awgctl run -host %s 'tail -3 %s'\n", inst.IP, probeLogPath)
 	return nil
 }
 
@@ -188,7 +191,15 @@ func cmdLabList(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
-	ours, err := vultr.New(secrets.VultrAPIKey).InstancesByTag(ctx, LabTag)
+	st, err := store.Load(root)
+	if err != nil {
+		return err
+	}
+	labs, err := openClouds(st, secrets, LabTag)
+	if err != nil {
+		return err
+	}
+	ours, err := labs.List(ctx)
 	if err != nil {
 		return err
 	}
@@ -197,8 +208,11 @@ func cmdLabList(args []string) error {
 		return nil
 	}
 	for _, i := range ours {
-		fmt.Printf("%s  %-4s %-15s %-24s %s/%s\n",
-			i.ID[:8], i.Region, i.MainIP, i.Label, i.Status, i.PowerStatus)
+		ready := "строится"
+		if i.Ready {
+			ready = "готов"
+		}
+		fmt.Printf("%s %-24s %s\n", serverLine(i), i.Label, ready)
 	}
 
 	// Ready to paste into the watcher.
@@ -207,7 +221,7 @@ func cmdLabList(args []string) error {
 		if n > 0 {
 			fmt.Print(",")
 		}
-		fmt.Printf("%s=%s", i.Label, i.MainIP)
+		fmt.Printf("%s=%s", i.Label, i.IP)
 	}
 	fmt.Println("'")
 	return nil
@@ -230,9 +244,16 @@ func cmdLabDown(args []string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	vc := vultr.New(secrets.VultrAPIKey)
+	st, err := store.Load(root)
+	if err != nil {
+		return err
+	}
+	labs, err := openClouds(st, secrets, LabTag)
+	if err != nil {
+		return err
+	}
 
-	ours, err := vc.InstancesByTag(ctx, LabTag)
+	ours, err := labs.List(ctx)
 	if err != nil {
 		return err
 	}
@@ -242,17 +263,17 @@ func cmdLabDown(args []string) error {
 	}
 	fmt.Println("Будут удалены:")
 	for _, i := range ours {
-		fmt.Printf("  %s  %-4s %-15s %s\n", i.ID[:8], i.Region, i.MainIP, i.Label)
+		fmt.Printf("  %s %s\n", serverLine(i), i.Label)
 	}
 	if !*yes {
 		return errors.New("повтори с -yes")
 	}
 	for _, i := range ours {
-		if err := vc.DeleteInstance(ctx, i.ID); err != nil {
-			fmt.Printf("  %s: %v\n", i.ID[:8], err)
+		if err := labs.Delete(ctx, i.Provider, i.ID); err != nil {
+			fmt.Printf("  %s: %v\n", i.Ref(), err)
 			continue
 		}
-		fmt.Printf("  %s удалён\n", i.ID[:8])
+		fmt.Printf("  %s удалён\n", i.Ref())
 	}
 	return nil
 }

@@ -34,6 +34,12 @@ func New(key string) *Client {
 	}
 }
 
+// WithBase points the client at another address, such as a test server.
+func (c *Client) WithBase(base string) *Client {
+	c.base = base
+	return c
+}
+
 // Region is one Vultr location.
 type Region struct {
 	ID        string   `json:"id"`

@@ -4,8 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
+
+	"awgrotator/internal/cloud"
 )
 
 // The operator's bot runs on its own goroutine next to the manager. It never
@@ -29,7 +30,15 @@ type Snapshot struct {
 	LastMove     *MoveSummary
 	Watch        *WatchSummary
 	Node         *NodeSummary
-	Regions      []string
+
+	// Where the server is hosted and how it is paid for; PaidUntil is zero
+	// for a server paid by the hour.
+	Provider  string
+	Billing   cloud.Billing
+	PaidUntil time.Time
+
+	// Places are where a move can go.
+	Places []PlaceConfig
 
 	// Moving says a move is under way on this server right now.
 	Moving bool
@@ -170,9 +179,11 @@ func (m *Manager) Apply(ctx context.Context, a Action) {
 			done(Result{Err: errors.New("this server has already handed over")})
 			return
 		}
-		if a.Region != "" && !slices.Contains(m.Cfg.Regions, a.Region) {
-			done(Result{Err: fmt.Errorf("region %q is not one this line moves between", a.Region)})
-			return
+		if a.Region != "" {
+			if _, err := m.Cfg.FindPlace(a.Region); err != nil {
+				done(Result{Err: err})
+				return
+			}
 		}
 		m.log().Info("the operator asked for a move through the bot", "region", a.Region)
 		m.pending = &MoveRequest{Trigger: TriggerCommand, Region: a.Region}
@@ -285,12 +296,15 @@ func (m *Manager) publishSnapshot(ctx context.Context) {
 		CertDaysLeft: m.Cfg.CertDaysLeft(now),
 		LastMove:     SummaryOf(j.Latest()),
 		Watch:        m.watchSummary(),
-		Regions:      append([]string(nil), m.Cfg.Regions...),
+		Provider:     m.Cfg.Provider,
+		Billing:      m.Cfg.Billing,
+		PaidUntil:    m.Cfg.PaidUntil(),
+		Places:       append([]PlaceConfig(nil), m.Cfg.Places...),
 		Moving:       m.moving,
 		Current:      m.current,
 		CurrentKnown: m.currentKnown,
 	}
-	if next, ok := NextAutoMove(m.Cfg.Policy, m.Cfg.CreatedTime(), time.Duration(j.AgeJitterSec)*time.Second); ok {
+	if next, ok := NextAutoMove(m.Cfg.Policy, m.Cfg.CreatedTime(), time.Duration(j.AgeJitterSec)*time.Second, m.Cfg.PaidUntil()); ok {
 		s.NextAutoMove = next
 	}
 	if st, err := m.Host.NodeStatus(ctx); err == nil {

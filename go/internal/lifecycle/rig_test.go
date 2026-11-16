@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"awgrotator/internal/cloud"
 	"awgrotator/internal/deploy"
 	"awgrotator/internal/fleet"
 	"awgrotator/internal/node"
 	"awgrotator/internal/proto"
 	"awgrotator/internal/splitplan"
 	"awgrotator/internal/tunneltest"
-	"awgrotator/internal/vultr"
 )
 
 // ---- a clock that moves only when told to
@@ -88,23 +88,23 @@ func (e *events) count(prefix string) int {
 type fakeCloud struct {
 	mu        sync.Mutex
 	ev        *events
-	instances []vultr.Instance
+	instances []cloud.Server
 	deleted   []string
 	deleteErr error
 	listErr   error
 }
 
-func (c *fakeCloud) Tagged(context.Context) ([]vultr.Instance, error) {
+func (c *fakeCloud) List(context.Context) ([]cloud.Server, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ev.add("tagged")
 	if c.listErr != nil {
 		return nil, c.listErr
 	}
-	return append([]vultr.Instance(nil), c.instances...), nil
+	return append([]cloud.Server(nil), c.instances...), nil
 }
 
-func (c *fakeCloud) Delete(_ context.Context, id string) error {
+func (c *fakeCloud) Delete(_ context.Context, provider, id string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.deleteErr != nil {
@@ -114,7 +114,7 @@ func (c *fakeCloud) Delete(_ context.Context, id string) error {
 	c.deleted = append(c.deleted, id)
 	kept := c.instances[:0]
 	for _, i := range c.instances {
-		if i.ID != id {
+		if i.ID != id || i.Provider != provider {
 			kept = append(kept, i)
 		}
 	}
@@ -122,7 +122,7 @@ func (c *fakeCloud) Delete(_ context.Context, id string) error {
 	return nil
 }
 
-func (c *fakeCloud) add(i vultr.Instance) {
+func (c *fakeCloud) add(i cloud.Server) {
 	c.mu.Lock()
 	c.instances = append(c.instances, i)
 	c.mu.Unlock()
@@ -157,6 +157,10 @@ type fakeProv struct {
 	// dieAfterCreate simulates the process dying once the instance exists but
 	// before the build finishes.
 	dieAfterCreate error
+
+	// errFor, when set, fails the build in some places, such as one with no
+	// servers free.
+	errFor func(cloud.Place) error
 }
 
 func (p *fakeProv) Provision(_ context.Context, req ProvisionRequest) (*deploy.Result, error) {
@@ -165,12 +169,17 @@ func (p *fakeProv) Provision(_ context.Context, req ProvisionRequest) (*deploy.R
 	if p.err != nil {
 		return nil, p.err
 	}
+	if p.errFor != nil {
+		if err := p.errFor(req.Place); err != nil {
+			return nil, err
+		}
+	}
 	p.next++
-	inst := vultr.Instance{
-		ID:     fmt.Sprintf("new-%d", p.next),
-		MainIP: fmt.Sprintf("198.51.100.%d", p.next),
-		Region: req.Region,
-		Tags:   []string{"awg-rotator"},
+	inst := cloud.Server{
+		Provider: req.Place.Provider,
+		ID:       fmt.Sprintf("new-%d", p.next),
+		IP:       fmt.Sprintf("198.51.100.%d", p.next),
+		Location: req.Place.Location,
 	}
 	// The instance exists from here, as it does in the real provisioner.
 	p.cloud.add(inst)
@@ -187,7 +196,7 @@ func (p *fakeProv) Provision(_ context.Context, req ProvisionRequest) (*deploy.R
 		}
 		p.files = files
 	}
-	return &deploy.Result{InstanceID: inst.ID, IP: inst.MainIP, Region: req.Region}, nil
+	return &deploy.Result{Provider: inst.Provider, InstanceID: inst.ID, IP: inst.IP, Region: req.Place.Location}, nil
 }
 
 type fakeTester struct {
@@ -346,7 +355,7 @@ func newRig(t *testing.T) *rig {
 		t.Fatal(err)
 	}
 
-	cloud := &fakeCloud{ev: ev, instances: []vultr.Instance{{ID: cfg.InstanceID, MainIP: cfg.IP, Region: cfg.Region}}}
+	cloud := &fakeCloud{ev: ev, instances: []cloud.Server{{Provider: cfg.Provider, ID: cfg.InstanceID, IP: cfg.IP, Location: cfg.Region}}}
 	r := &rig{
 		t: t, keys: keys, cfg: cfg, clock: clk, ev: ev,
 		cloud:  cloud,

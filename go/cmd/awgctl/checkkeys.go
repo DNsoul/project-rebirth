@@ -20,7 +20,7 @@ import (
 // they never appear in a process listing, and the files are removed whatever
 // happens.
 const keyCheckScript = `#!/bin/sh
-trap 'rm -f /root/.chk-vultr /root/.chk-github' EXIT
+trap 'rm -f /root/.chk-vultr /root/.chk-github /root/.chk-cherry' EXIT
 v=$(curl -s -o /dev/null -w '%{http_code}' -m 20 \
   -H "Authorization: Bearer $(cat /root/.chk-vultr)" \
   'https://api.vultr.com/v2/instances?per_page=1')
@@ -28,7 +28,13 @@ g=$(curl -s -o /dev/null -w '%{http_code}' -m 20 \
   -H "Authorization: Bearer $(cat /root/.chk-github)" \
   -H 'Accept: application/vnd.github+json' \
   'https://api.github.com/gists?per_page=1')
-echo "vultr=$v github=$g"
+c=none
+if [ -s /root/.chk-cherry ]; then
+  c=$(curl -s -o /dev/null -w '%{http_code}' -m 20 \
+    -H "Authorization: Bearer $(cat /root/.chk-cherry)" \
+    'https://api.cherryservers.com/v1/teams')
+fi
+echo "vultr=$v github=$g cherry=$c"
 `
 
 // cmdCheckKeys confirms that the Vultr and GitHub credentials work from the
@@ -74,11 +80,12 @@ func cmdCheckKeys(args []string) error {
 	defer cli.Close()
 
 	// Whatever happens below, do not leave the keys on the disk.
-	defer cli.Run("rm -f /root/.chk-vultr /root/.chk-github /root/.chk.sh")
+	defer cli.Run("rm -f /root/.chk-vultr /root/.chk-github /root/.chk-cherry /root/.chk.sh")
 
 	for _, f := range []struct{ path, content, mode string }{
 		{"/root/.chk-vultr", secrets.VultrAPIKey, "0600"},
 		{"/root/.chk-github", secrets.GitHubToken, "0600"},
+		{"/root/.chk-cherry", secrets.CherryAPIKey, "0600"},
 		{"/root/.chk.sh", keyCheckScript, "0700"},
 	} {
 		if err := cli.Upload(f.path, f.mode, []byte(f.content)); err != nil {
@@ -114,7 +121,13 @@ func cmdCheckKeys(args []string) error {
 	okV := report("Vultr", codes["vultr"],
 		"Вероятно, в «Access Control» ключа разрешён только твой адрес: нужно разрешить все IPv4.")
 	okG := report("GitHub", codes["github"], "Проверь права токена: Gists — Read and write.")
-	if !okV || !okG {
+	okC := true
+	if codes["cherry"] == "none" {
+		fmt.Printf("  %-8s ключа нет, не проверяю\n", "Cherry")
+	} else {
+		okC = report("Cherry", codes["cherry"], "Проверь ключ в кабинете Cherry (API keys).")
+	}
+	if !okV || !okG || !okC {
 		return errors.New("ключи не работают с адреса сервера")
 	}
 	fmt.Println("Файлы с ключами на сервере удалены.")

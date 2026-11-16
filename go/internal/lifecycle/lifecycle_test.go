@@ -11,6 +11,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"awgrotator/internal/cloud"
 	"awgrotator/internal/proto"
 )
 
@@ -67,13 +68,21 @@ func testConfig(t *testing.T, keys testKeys) *Config {
 	}
 
 	return &Config{
-		Version:     ConfigVersion,
-		InstanceID:  "self-instance",
-		IP:          "203.0.113.10",
-		Region:      "sto",
-		CreatedAt:   t0.Unix(),
-		Generation:  1,
-		VultrKey:    "vultr-key",
+		Version:    ConfigVersion,
+		InstanceID: "self-instance",
+		IP:         "203.0.113.10",
+		Region:     "sto",
+		CreatedAt:  t0.Unix(),
+		Generation: 1,
+		Provider:   "vultr",
+		Billing:    cloud.Hourly,
+		Clouds: map[string]cloud.Settings{"vultr": {
+			Key: "vultr-key", Plan: "vc2-1c-1gb", Image: "2625", Tag: "awg-rotator", SSHKeyID: "ssh-key-id",
+		}},
+		Places: []PlaceConfig{
+			{ID: "vultr:sto", Billing: cloud.Hourly}, {ID: "vultr:waw", Billing: cloud.Hourly},
+			{ID: "vultr:fra", Billing: cloud.Hourly}, {ID: "vultr:ams", Billing: cloud.Hourly},
+		},
 		GitHubToken: "github-token",
 		GistID:      "gist-id",
 		ServerSeed:  proto.Encode(server.Seed()),
@@ -82,11 +91,6 @@ func testConfig(t *testing.T, keys testKeys) *Config {
 		RootPub:     proto.Encode(proto.PublicOf(keys.root)),
 		BackupPub:   proto.Encode(proto.PublicOf(keys.backup)),
 		SSHPrivate:  string(pem.EncodeToMemory(block)),
-		SSHKeyID:    "ssh-key-id",
-		Plan:        "vc2-1c-1gb",
-		OsID:        2625,
-		Tag:         "awg-rotator",
-		Regions:     []string{"sto", "waw", "fra", "ams"},
 		Policy:      DefaultPolicy(),
 	}
 }
@@ -110,20 +114,28 @@ func TestAValidConfigPasses(t *testing.T) {
 func TestConfigValidationCatchesWhatWouldFailLater(t *testing.T) {
 	keys := newTestKeys(t)
 	cases := map[string]func(*Config){
-		"wrong version":        func(c *Config) { c.Version = 9 },
-		"no instance":          func(c *Config) { c.InstanceID = "" },
-		"no vultr key":         func(c *Config) { c.VultrKey = "" },
-		"no github token":      func(c *Config) { c.GitHubToken = "" },
-		"no gist":              func(c *Config) { c.GistID = "" },
-		"no ssh key id":        func(c *Config) { c.SSHKeyID = "" },
-		"no os":                func(c *Config) { c.OsID = 0 },
-		"one region":           func(c *Config) { c.Regions = []string{"sto"} },
-		"no generation":        func(c *Config) { c.Generation = 0 },
-		"no creation time":     func(c *Config) { c.CreatedAt = 0 },
-		"garbage seed":         func(c *Config) { c.ServerSeed = "!!!" },
-		"garbage ssh key":      func(c *Config) { c.SSHPrivate = "not a key" },
-		"policy ceiling":       func(c *Config) { c.Policy.MaxServers = 50 },
-		"cert for another key": func(c *Config) { c.Cert.ServerPub = proto.Encode(make([]byte, 32)) },
+		"wrong version":         func(c *Config) { c.Version = 9 },
+		"no instance":           func(c *Config) { c.InstanceID = "" },
+		"no vultr key":          func(c *Config) { s := c.Clouds["vultr"]; s.Key = ""; c.Clouds["vultr"] = s },
+		"no github token":       func(c *Config) { c.GitHubToken = "" },
+		"no gist":               func(c *Config) { c.GistID = "" },
+		"no ssh key id":         func(c *Config) { s := c.Clouds["vultr"]; s.SSHKeyID = ""; c.Clouds["vultr"] = s },
+		"no os":                 func(c *Config) { s := c.Clouds["vultr"]; s.Image = ""; c.Clouds["vultr"] = s },
+		"one region":            func(c *Config) { c.Places = c.Places[:1] },
+		"no providers":          func(c *Config) { c.Clouds = nil },
+		"unknown own provider":  func(c *Config) { c.Provider = "cherry" },
+		"bad billing":           func(c *Config) { c.Billing = "weekly" },
+		"place at a stranger":   func(c *Config) { c.Places[0].ID = "cherry:ams" },
+		"place in no city":      func(c *Config) { c.Places[0].ID = "vultr:moon" },
+		"place twice":           func(c *Config) { c.Places[1] = c.Places[0] },
+		"place without billing": func(c *Config) { c.Places[0].Billing = "" },
+		"bare place":            func(c *Config) { c.Places[0].ID = "sto" },
+		"no generation":         func(c *Config) { c.Generation = 0 },
+		"no creation time":      func(c *Config) { c.CreatedAt = 0 },
+		"garbage seed":          func(c *Config) { c.ServerSeed = "!!!" },
+		"garbage ssh key":       func(c *Config) { c.SSHPrivate = "not a key" },
+		"policy ceiling":        func(c *Config) { c.Policy.MaxServers = 50 },
+		"cert for another key":  func(c *Config) { c.Cert.ServerPub = proto.Encode(make([]byte, 32)) },
 	}
 	for name, mutate := range cases {
 		cfg := testConfig(t, keys)
@@ -307,11 +319,11 @@ func TestAutomaticMovesAreRateLimited(t *testing.T) {
 
 func TestNextAutoMove(t *testing.T) {
 	p := DefaultPolicy()
-	if _, ok := NextAutoMove(p, t0, 0); ok {
+	if _, ok := NextAutoMove(p, t0, 0, time.Time{}); ok {
 		t.Error("a date was given with age moves off")
 	}
 	p.AutoAge = true
-	at, ok := NextAutoMove(p, t0, 24*time.Hour)
+	at, ok := NextAutoMove(p, t0, 24*time.Hour, time.Time{})
 	if !ok || !at.Equal(t0.Add(p.MaxAge()+24*time.Hour)) {
 		t.Errorf("NextAutoMove = %v, %v", at, ok)
 	}

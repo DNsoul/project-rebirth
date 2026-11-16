@@ -216,10 +216,26 @@ func refreshManagerConfig(cli *remote.Client, st *store.State, secrets config.Se
 	}
 	wantGitLab, wantBot := gitLabSyncFor(st), telegramFor(st, secrets)
 	sameGitLab, sameBot := reflect.DeepEqual(cfg.GitLab, wantGitLab), reflect.DeepEqual(cfg.Telegram, wantBot)
-	if sameGitLab && sameBot {
+
+	// The hosting providers and places: what the operator has set up now.
+	// A file still in the version 1 layout is rewritten in the current one.
+	wantClouds := managerClouds(st, secrets)
+	if _, ok := wantClouds[cfg.Provider]; !ok {
+		// Never take away the provider the server itself is at: it could not
+		// delete itself when its time came.
+		wantClouds[cfg.Provider] = cfg.Clouds[cfg.Provider]
+	}
+	wantPlaces := placesFor(wantClouds)
+	sameClouds := reflect.DeepEqual(cfg.Clouds, wantClouds) && reflect.DeepEqual(cfg.Places, wantPlaces) &&
+		strings.Contains(raw, `"clouds"`)
+	if sameGitLab && sameBot && sameClouds {
 		return nil
 	}
 	cfg.GitLab, cfg.Telegram = wantGitLab, wantBot
+	cfg.Clouds, cfg.Places = wantClouds, wantPlaces
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("новые настройки менеджера не годятся, оставляю прежние: %w", err)
+	}
 	data, err := cfg.Marshal()
 	if err != nil {
 		return err
@@ -233,6 +249,9 @@ func refreshManagerConfig(cli *remote.Client, st *store.State, secrets config.Se
 		logf("  второе место убрано из настроек менеджера")
 	default:
 		logf("  менеджер получил второе место (GitLab) и будет писать и туда")
+	}
+	if !sameClouds {
+		logf("  места для переездов: %s", strings.Join(cfg.PlaceIDs(), ", "))
 	}
 	switch {
 	case sameBot:

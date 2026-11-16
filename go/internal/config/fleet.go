@@ -11,7 +11,21 @@ const (
 	OsID = 2625 // Debian 13 x64 (trixie)
 )
 
-// Regions the rotation picks from. Chosen for low latency to Russia.
+// Cherry Servers: the smallest shared server, 1 vCPU and 1 GB, Debian 13, in
+// a project of our own. Paid by the month: by the hour it costs more than the
+// operator's limit, so the line only goes there when the operator says so.
+const (
+	CherryPlan    = "B2-1-1gb-20s-shared"
+	CherryImage   = "debian_13_64bit"
+	CherryProject = "awg-rotator"
+)
+
+// CherryLocations are the Cherry cities used: the ones with the small server
+// in stock when this was written (Stockholm and Frankfurt had none).
+var CherryLocations = []string{"ams", "sia"}
+
+// Regions are the Vultr cities the rotation picks from, by the hour. Chosen
+// for low latency to Russia.
 var Regions = []string{
 	"sto", // Stockholm
 	"waw", // Warsaw

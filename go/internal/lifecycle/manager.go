@@ -454,6 +454,7 @@ func (m *Manager) maybeMove(ctx context.Context, now time.Time) error {
 		Now:       now,
 		CreatedAt: m.Cfg.CreatedTime(),
 		AgeJitter: time.Duration(j.AgeJitterSec) * time.Second,
+		PaidUntil: m.Cfg.PaidUntil(),
 		Attempts:  j.AttemptTimes(),
 		Health:    m.tracker.Verdict(),
 		Command:   m.pending,
@@ -529,11 +530,11 @@ func (m *Manager) statusBody(ctx context.Context, now time.Time) (StatusBody, er
 		Watch:        m.watchSummary(),
 		UpdatedAt:    now.Unix(),
 	}
-	if next, ok := NextAutoMove(m.Cfg.Policy, m.Cfg.CreatedTime(), time.Duration(j.AgeJitterSec)*time.Second); ok {
+	if next, ok := NextAutoMove(m.Cfg.Policy, m.Cfg.CreatedTime(), time.Duration(j.AgeJitterSec)*time.Second, m.Cfg.PaidUntil()); ok {
 		s.NextAutoMove = next.Unix()
 	}
-	if tagged, err := m.Cloud.Tagged(ctx); err == nil {
-		s.Servers = len(tagged)
+	if ours, err := m.Cloud.List(ctx); err == nil {
+		s.Servers = len(ours)
 	}
 	if st, err := m.Host.NodeStatus(ctx); err == nil {
 		s.Node = Summarize(st)

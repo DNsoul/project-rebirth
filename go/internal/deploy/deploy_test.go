@@ -11,7 +11,9 @@ func TestInstallScriptStartsTheNodeFirst(t *testing.T) {
 		"set -eu",
 		"systemctl enable awgnode",
 		"systemctl restart awgnode",
-		"apt-get install -y -qq nftables",
+		"need=\"$need nftables\"",
+		"need=\"$need bind9-dnsutils\"",
+		"apt-get install -y -qq $need",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("the script is missing %q:\n%s", want, script)

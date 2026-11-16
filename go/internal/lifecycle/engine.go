@@ -11,39 +11,41 @@ import (
 	"math/big"
 	"net/netip"
 	"path/filepath"
+	"slices"
 	"time"
 
+	"awgrotator/internal/cloud"
 	"awgrotator/internal/deploy"
 	"awgrotator/internal/enroll"
 	"awgrotator/internal/fleet"
 	"awgrotator/internal/node"
 	"awgrotator/internal/splitplan"
 	"awgrotator/internal/tunneltest"
-	"awgrotator/internal/vultr"
 )
 
 // Cloud is the part of the cloud provider the engine talks to directly.
 type Cloud interface {
-	// Tagged lists the instances carrying our tag, and only those.
-	Tagged(ctx context.Context) ([]vultr.Instance, error)
+	// List returns our servers at every provider in use, and only ours.
+	List(ctx context.Context) ([]cloud.Server, error)
 
-	// Delete destroys an instance.
-	Delete(ctx context.Context, id string) error
+	// Delete destroys one of our servers at the named provider.
+	Delete(ctx context.Context, provider, id string) error
 }
 
 // ProvisionRequest describes a server to build.
 type ProvisionRequest struct {
-	Region string
-	Label  string
-	Node   *node.Config
-	Files  []deploy.File
+	Place   cloud.Place
+	Billing cloud.Billing
+	Label   string
+	Node    *node.Config
+	Files   []deploy.File
 
-	// FilesFor supplies files that need the instance to exist first.
-	FilesFor func(inst *vultr.Instance) ([]deploy.File, error)
+	// FilesFor supplies files that need the server to exist first.
+	FilesFor func(s *cloud.Server) ([]deploy.File, error)
 
-	// OnCreated is called the moment the instance exists, so that it can be
+	// OnCreated is called the moment the server exists, so that it can be
 	// written down before the slow part of building it begins.
-	OnCreated func(inst *vultr.Instance)
+	OnCreated func(s *cloud.Server)
 }
 
 // Provisioner creates a server and installs the node and manager on it. A
@@ -154,6 +156,7 @@ func (e *Engine) log() *slog.Logger {
 // MoveResult describes the server that now takes over.
 type MoveResult struct {
 	AttemptID  string
+	Provider   string
 	InstanceID string
 	IP         string
 	Region     string
@@ -181,21 +184,18 @@ func (e *Engine) Move(ctx context.Context, req MoveRequest) (*MoveResult, error)
 
 	// 1. Room. Counting only what carries our tag, so nothing else on the
 	// account is ever in the way, and nothing else is ever touched.
-	tagged, err := e.Cloud.Tagged(ctx)
+	ours, err := e.Cloud.List(ctx)
 	if err != nil {
 		return fail(fmt.Errorf("list servers: %w", err))
 	}
-	if len(tagged) >= e.Cfg.Policy.MaxServers {
+	if len(ours) >= e.Cfg.Policy.MaxServers {
 		return fail(fmt.Errorf("%w: %d servers exist, the limit is %d",
-			ErrCapReached, len(tagged), e.Cfg.Policy.MaxServers))
+			ErrCapReached, len(ours), e.Cfg.Policy.MaxServers))
 	}
 
-	// 2. Where.
-	region, err := e.chooseRegion(req.Region)
+	// 2. Where: the places to try, in order.
+	candidates, err := e.choosePlaces(req)
 	if err != nil {
-		return fail(err)
-	}
-	if err := e.J.Step(id, func(a *Attempt) { a.Region = region }); err != nil {
 		return fail(err)
 	}
 
@@ -214,39 +214,61 @@ func (e *Engine) Move(ctx context.Context, req MoveRequest) (*MoveResult, error)
 	}
 	clientNet := fleet.ClientNet{DNS: plan.DNS, AllowedIPs: plan.AllowedIPs}
 
-	// 4. Build it.
-	var body *fleet.ConfigBody
-	res, err := e.Prov.Provision(ctx, ProvisionRequest{
-		Region: region,
-		Label:  fmt.Sprintf("awg-%s-g%d-%d", region, e.Cfg.Generation+1, e.now().Unix()),
-		Node:   gen.Node,
-		Files:  plan.Files,
-		// Written down at once. If this process dies during the minutes it
-		// takes to install the server, Resume can still find it and clean up.
-		OnCreated: func(inst *vultr.Instance) {
-			if err := e.J.Step(id, func(a *Attempt) { a.InstanceID, a.NewIP = inst.ID, inst.MainIP }); err != nil {
-				e.log().Error("could not record the new server; if this process dies it may be left running",
-					"instance", inst.ID, "error", err)
-			}
-		},
-		FilesFor: func(inst *vultr.Instance) ([]deploy.File, error) {
-			// The body needs the new server's address, which exists only
-			// now. It is built here and published later, unchanged.
-			body = gen.Body(region, inst.MainIP, clientNet, e.now())
-			return e.successorFiles(inst, region, body)
-		},
-	})
-	if err != nil {
+	// 4. Build it. A place that has no servers of our size free is passed
+	// over for the next one, when there is a next one.
+	var (
+		body  *fleet.ConfigBody
+		res   *deploy.Result
+		place PlaceConfig
+	)
+	for i, pc := range candidates {
+		place = pc
+		where := pc.Place()
+		region := where.Location
+		if err := e.J.Step(id, func(a *Attempt) { a.Region, a.Provider = region, where.Provider }); err != nil {
+			return fail(err)
+		}
+		body = nil
+		res, err = e.Prov.Provision(ctx, ProvisionRequest{
+			Place:   where,
+			Billing: pc.Billing,
+			Label:   fmt.Sprintf("awg-%s-g%d-%d", region, e.Cfg.Generation+1, e.now().Unix()),
+			Node:    gen.Node,
+			Files:   plan.Files,
+			// Written down at once. If this process dies during the minutes it
+			// takes to install the server, Resume can still find it and clean up.
+			OnCreated: func(s *cloud.Server) {
+				if err := e.J.Step(id, func(a *Attempt) { a.InstanceID, a.NewIP = s.ID, s.IP }); err != nil {
+					e.log().Error("could not record the new server; if this process dies it may be left running",
+						"server", s.Ref(), "error", err)
+				}
+			},
+			FilesFor: func(s *cloud.Server) ([]deploy.File, error) {
+				// The body needs the new server's address, which exists only
+				// now. It is built here and published later, unchanged.
+				body = gen.Body(region, s.IP, clientNet, e.now())
+				return e.successorFiles(s, pc, body)
+			},
+		})
+		if err == nil {
+			break
+		}
+		if errors.Is(err, cloud.ErrNoCapacity) && i+1 < len(candidates) {
+			e.log().Warn("no server free there; trying the next place", "place", pc.ID, "error", err)
+			continue
+		}
 		// Provisioning removes anything it created before failing.
-		return fail(fmt.Errorf("build the new server: %w", err))
+		return fail(fmt.Errorf("build the new server in %s: %w", pc.ID, err))
 	}
+	region := place.Place().Location
+	provider := place.Place().Provider
 	if body == nil {
 		body = gen.Body(region, res.IP, clientNet, e.now())
 	}
 	if err := e.J.Step(id, func(a *Attempt) {
 		a.State, a.InstanceID, a.NewIP = StateProvisioned, res.InstanceID, res.IP
 	}); err != nil {
-		_ = e.removeSuccessor(ctx, res.InstanceID)
+		_ = e.removeSuccessor(ctx, provider, res.InstanceID)
 		return fail(err)
 	}
 
@@ -255,7 +277,7 @@ func (e *Engine) Move(ctx context.Context, req MoveRequest) (*MoveResult, error)
 	// rather than closed as failed: closing it would make the journal claim
 	// the server is gone, and nothing would ever try again.
 	abandon := func(cause error) (*MoveResult, error) {
-		if rmErr := e.removeSuccessor(ctx, res.InstanceID); rmErr != nil {
+		if rmErr := e.removeSuccessor(ctx, provider, res.InstanceID); rmErr != nil {
 			_ = e.J.Step(id, func(a *Attempt) {
 				a.Error = cause.Error() + "; the new server could not be removed yet: " + rmErr.Error()
 			})
@@ -300,7 +322,7 @@ func (e *Engine) Move(ctx context.Context, req MoveRequest) (*MoveResult, error)
 	}
 
 	e.log().Info("the new server is published", "region", region, "seq", seq)
-	return &MoveResult{AttemptID: id, InstanceID: res.InstanceID, IP: res.IP, Region: region, Seq: seq}, nil
+	return &MoveResult{AttemptID: id, Provider: provider, InstanceID: res.InstanceID, IP: res.IP, Region: region, Seq: seq}, nil
 }
 
 // removeSuccessor deletes a server this engine created and is abandoning. It
@@ -311,10 +333,10 @@ func (e *Engine) Move(ctx context.Context, req MoveRequest) (*MoveResult, error)
 // cleaned up when it is not: the provider refuses to delete a server that is
 // still being installed ("locked"), which is exactly the state an abandoned
 // server is in when the process that was building it has just died.
-func (e *Engine) removeSuccessor(ctx context.Context, instanceID string) error {
+func (e *Engine) removeSuccessor(ctx context.Context, provider, instanceID string) error {
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 	defer cancel()
-	if err := e.Cloud.Delete(cleanup, instanceID); err != nil {
+	if err := e.Cloud.Delete(cleanup, provider, instanceID); err != nil {
 		e.log().Error("could not remove the abandoned server yet: it is still running and costing money",
 			"instance", instanceID, "error", err)
 		return err
@@ -323,30 +345,54 @@ func (e *Engine) removeSuccessor(ctx context.Context, instanceID string) error {
 	return nil
 }
 
-// chooseRegion picks where the new server goes. An explicit request must name
-// a known region; otherwise any region but the current one is chosen, so that a
-// move actually changes something.
-func (e *Engine) chooseRegion(want string) (string, error) {
-	known := e.Cfg.Regions
-	if want != "" {
-		for _, r := range known {
-			if r == want {
-				return want, nil
-			}
+// choosePlaces lists where the new server may go, in the order to try.
+//
+// A place the operator named is the only one tried, whatever it costs: the
+// operator chose it. Otherwise only places paid by the hour are used, never
+// the one this server is in unless there is nothing else, and the order is
+// random. When the server is leaving because it looks blocked, places at
+// another provider come first: the censor blocks a provider's network as a
+// whole, so another city on the same network is unlikely to help.
+func (e *Engine) choosePlaces(req MoveRequest) ([]PlaceConfig, error) {
+	if req.Region != "" {
+		p, err := e.Cfg.FindPlace(req.Region)
+		if err != nil {
+			return nil, err
 		}
-		return "", fmt.Errorf("unknown region %q, choose from %v", want, known)
+		return []PlaceConfig{p}, nil
 	}
 
-	var others []string
-	for _, r := range known {
-		if r != e.Cfg.Region {
-			others = append(others, r)
+	here := e.Cfg.CurrentPlace()
+	var others []PlaceConfig
+	var stay *PlaceConfig
+	for _, p := range e.Cfg.Places {
+		if p.Billing != cloud.Hourly {
+			continue
 		}
+		if p.Place() == here {
+			stay = &p
+			continue
+		}
+		others = append(others, p)
 	}
 	if len(others) == 0 {
-		others = known
+		if stay == nil {
+			return nil, errors.New("there is no place paid by the hour to move to on its own; monthly places are for the operator to choose")
+		}
+		return []PlaceConfig{*stay}, nil
 	}
-	return others[e.intn(len(others))], nil
+
+	// Shuffled, then the preferred group first, keeping the shuffle within it.
+	for i := len(others) - 1; i > 0; i-- {
+		j := e.intn(i + 1)
+		others[i], others[j] = others[j], others[i]
+	}
+	if req.Trigger == TriggerBlocked || req.Trigger == TriggerBroken {
+		slices.SortStableFunc(others, func(a, b PlaceConfig) int {
+			return boolRank(a.Place().Provider == here.Provider) - boolRank(b.Place().Provider == here.Provider)
+		})
+	}
+	return others, nil
 }
 
 func (e *Engine) intn(n int) int {
@@ -395,11 +441,13 @@ func (e *Engine) testTarget(gen *fleet.Generation, ip string, contentKey []byte)
 // successorFiles are the files that make a new server a manager in its own
 // right: its configuration, the configuration it publishes, and the table of
 // stand-in addresses so that addresses clients already cached keep working.
-func (e *Engine) successorFiles(inst *vultr.Instance, region string, body *fleet.ConfigBody) ([]deploy.File, error) {
+func (e *Engine) successorFiles(s *cloud.Server, place PlaceConfig, body *fleet.ConfigBody) ([]deploy.File, error) {
 	next := *e.Cfg
-	next.InstanceID = inst.ID
-	next.IP = inst.MainIP
-	next.Region = region
+	next.InstanceID = s.ID
+	next.IP = s.IP
+	next.Region = place.Place().Location
+	next.Provider = place.Place().Provider
+	next.Billing = place.Billing
 	next.CreatedAt = e.now().Unix()
 	next.Generation = e.Cfg.Generation + 1
 
@@ -606,7 +654,7 @@ func (e *Engine) DeleteSelf(ctx context.Context) error {
 	e.log().Info("deleting this server", "instance", e.Cfg.InstanceID)
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 	defer cancel()
-	if err := e.Cloud.Delete(cleanup, e.Cfg.InstanceID); err != nil {
+	if err := e.Cloud.Delete(cleanup, e.Cfg.Provider, e.Cfg.InstanceID); err != nil {
 		return fmt.Errorf("delete this server: %w", err)
 	}
 	return nil
@@ -673,7 +721,7 @@ func (e *Engine) resumeUnpublished(ctx context.Context, a *Attempt) error {
 	}
 
 	if a.InstanceID != "" {
-		if err := e.removeSuccessor(ctx, a.InstanceID); err != nil {
+		if err := e.removeSuccessor(ctx, a.ProviderName(), a.InstanceID); err != nil {
 			// Left open, so the manager tries again on its next pass. The
 			// provider will not delete a server while it is still being
 			// installed, so the first attempt after a crash often fails.

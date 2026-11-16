@@ -27,6 +27,7 @@ type Attempt struct {
 	StartedAt  int64   `json:"started_at"`
 	Trigger    Trigger `json:"trigger"`
 	Region     string  `json:"region,omitempty"`
+	Provider   string  `json:"provider,omitempty"`
 	InstanceID string  `json:"instance_id,omitempty"`
 	NewIP      string  `json:"new_ip,omitempty"`
 	State      string  `json:"state"`
@@ -38,6 +39,15 @@ type Attempt struct {
 	// PublishedAt is when clients were told, which the earliest early
 	// retirement is measured from.
 	PublishedAt int64 `json:"published_at,omitempty"`
+}
+
+// ProviderName is who hosts the attempt's server. Attempts written before
+// there was more than one provider were all at Vultr.
+func (a Attempt) ProviderName() string {
+	if a.Provider == "" {
+		return "vultr"
+	}
+	return a.Provider
 }
 
 // Journal is the manager's memory, kept on disk so that a restart in the
