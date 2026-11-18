@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"awgrotator/internal/egress"
 	"awgrotator/internal/lifecycle"
 	"awgrotator/internal/node"
 	"awgrotator/internal/telegram"
@@ -411,7 +412,20 @@ func (b *Bot) press(ctx context.Context, q *telegram.CallbackQuery) {
 		notice = b.act(chat, a, "")
 		// The manager applies it a moment later; the menu is drawn from the
 		// change itself, so it does not show the state from before.
-		edit(b.serviceViewWith(a.AutoAge, a.AutoBlock))
+		edit(b.serviceViewWith(a.AutoAge, a.AutoBlock, nil))
+
+	case "px":
+		edit(confirmExit(arg == "on"))
+
+	case "px!":
+		mode := egress.Direct
+		on, id, _ := strings.Cut(arg, ":")
+		if on == "on" {
+			mode = egress.WARP
+		}
+		notice = b.act(chat, lifecycle.Action{Kind: lifecycle.ActPolicy, ID: id, Exit: &mode},
+			"Принято. Выход переключится в течение минуты, напишу, когда получится.")
+		edit(b.serviceViewWith(nil, nil, &mode))
 
 	case "ck":
 		notice = b.act(chat, lifecycle.Action{Kind: lifecycle.ActCheck}, "Проверяю, это займёт до минуты…")

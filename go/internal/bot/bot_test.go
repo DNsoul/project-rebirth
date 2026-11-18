@@ -3,6 +3,7 @@ package bot
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/netip"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"awgrotator/internal/awg"
 	"awgrotator/internal/cloud"
+	"awgrotator/internal/egress"
 	"awgrotator/internal/enroll"
 	"awgrotator/internal/lifecycle"
 	"awgrotator/internal/node"
@@ -595,6 +597,68 @@ func TestEveryButtonFitsTelegramsLimit(t *testing.T) {
 					t.Errorf("button %q has %d bytes of data", b.Text, len(b.Data))
 				}
 			}
+		}
+	}
+}
+
+func TestTheWayOutIsSwitchedOnlyAfterAskingAndTheMenuShowsWhatItWillBe(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	if !strings.Contains(fmt.Sprint(r.bot.serviceView().kb), "Выход через WARP: выкл → включить") {
+		t.Fatalf("the menu does not offer WARP: %+v", r.bot.serviceView().kb)
+	}
+	r.bot.handle(ctx, press(owner, "px:on"))
+	_, edits, _ := r.api.snapshot()
+	data := edits[0].kb[0][0].Data
+	if !strings.HasPrefix(data, "px!:on:") || !strings.Contains(edits[0].text, "Открытые соединения оборвутся") {
+		t.Fatalf("confirmation = %q / %q", edits[0].text, data)
+	}
+	if len(r.mgr.actions) != 0 {
+		t.Fatal("switched before it was confirmed")
+	}
+	r.bot.handle(ctx, press(owner, data))
+	if len(r.mgr.actions) != 1 {
+		t.Fatalf("actions = %+v", r.mgr.actions)
+	}
+	a := r.mgr.actions[0]
+	if a.Kind != lifecycle.ActPolicy || a.Exit == nil || *a.Exit != egress.WARP || a.AutoAge != nil || a.AutoBlock != nil {
+		t.Fatalf("action = %+v", a)
+	}
+	_, edits, _ = r.api.snapshot()
+	if !strings.Contains(fmt.Sprint(edits[len(edits)-1].kb), "Выход через WARP: вкл → выключить") {
+		t.Errorf("the menu still offers to switch it on: %+v", edits[len(edits)-1].kb)
+	}
+	if len(data) > 64 {
+		t.Errorf("button data is %d bytes, Telegram allows 64", len(data))
+	}
+}
+
+func TestTheStatusSaysWhereTheTrafficLeavesFrom(t *testing.T) {
+	r := newRig(t)
+	if text := r.bot.statusView(context.Background()).text; !strings.Contains(text, "Выход в интернет: напрямую, с адреса сервера.") {
+		t.Errorf("status = %q", text)
+	}
+	r.mgr.set(func(s *lifecycle.Snapshot) {
+		s.ExitWant = egress.WARP
+		s.Exit = &egress.Status{Want: egress.WARP, State: egress.StateFallback, Since: r.now, Error: "dial tcp 172.16.0.2:0->1.1.1.1:443: i/o timeout"}
+	})
+	text := r.bot.statusView(context.Background()).text
+	if !strings.Contains(text, "WARP не отвечает с ") || !strings.Contains(text, "временно напрямую") {
+		t.Errorf("status = %q", text)
+	}
+	if strings.Contains(text, "172.16.0.2") || strings.Contains(text, "1.1.1.1") {
+		t.Errorf("an address in the status: %q", text)
+	}
+}
+
+func TestChangesOfTheWayOutAreToldInWords(t *testing.T) {
+	for state, want := range map[egress.State]string{
+		egress.StateWARP:     "Выход через WARP работает",
+		egress.StateFallback: "WARP не отвечает",
+		egress.StateDirect:   "напрямую, с адреса сервера",
+	} {
+		if got := eventText(lifecycle.Event{Kind: lifecycle.EventExit, Exit: state}); !strings.Contains(got, want) {
+			t.Errorf("%s: %q", state, got)
 		}
 	}
 }

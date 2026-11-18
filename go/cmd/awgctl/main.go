@@ -46,6 +46,7 @@ func main() {
 		"gc":            cmdGC,
 		"watch":         cmdWatch,
 		"auto":          cmdAuto,
+		"exit":          cmdExit,
 		"verify":        cmdVerify,
 		"check-keys":    cmdCheckKeys,
 		"cloud":         cmdCloud,
@@ -94,6 +95,7 @@ func usage() {
   sync            узнать, какой сервер сейчас текущий (после самостоятельного переезда)
   gc              найти и удалить лишние серверы, которые никому не нужны
   auto            включить или выключить самостоятельные переезды (-age, -block)
+  exit            выход трафика устройств: on (через WARP), off (напрямую), без слова — как сейчас
   verify          проверить опубликованный сервер настоящим клиентом
   check-keys      проверить, что ключи Vultr, GitHub и Cherry работают с адреса сервера
   cloud           хостеры: setup cherry — проект и ключ SSH в Cherry (один раз)

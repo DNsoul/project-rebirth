@@ -23,6 +23,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"awgrotator/internal/cloud"
+	"awgrotator/internal/egress"
 	"awgrotator/internal/proto"
 )
 
@@ -70,6 +71,21 @@ type Policy struct {
 	// BlockRounds is how many external checks in a row must say "blocked"
 	// before the server believes it.
 	BlockRounds int `json:"block_rounds"`
+
+	// Exit is where the clients' traffic leaves from: "direct" (or empty), the
+	// server's own address, or "warp", through Cloudflare WARP, so that the way
+	// in is never the way out (see package egress). It goes to every
+	// replacement with the rest of the policy.
+	Exit string `json:"exit,omitempty"`
+}
+
+// ExitMode is Exit as the node takes it.
+func (p Policy) ExitMode() egress.Mode {
+	m, err := egress.ParseMode(p.Exit)
+	if err != nil {
+		return egress.Direct
+	}
+	return m
 }
 
 // DefaultPolicy returns the policy a new server starts with.
@@ -114,6 +130,9 @@ func (p *Policy) Normalize() error {
 		return errors.New("the minimum grace period is longer than the grace period")
 	case p.MaxMovesPerDay > 12:
 		return fmt.Errorf("max moves per day is %d: refusing a ceiling that high", p.MaxMovesPerDay)
+	}
+	if _, err := egress.ParseMode(p.Exit); err != nil {
+		return err
 	}
 	return nil
 }

@@ -12,6 +12,7 @@ import (
 
 	"awgrotator/internal/cloud"
 	"awgrotator/internal/deploy"
+	"awgrotator/internal/egress"
 	"awgrotator/internal/fleet"
 	"awgrotator/internal/node"
 	"awgrotator/internal/proto"
@@ -296,6 +297,7 @@ type fakeHost struct {
 	registry   []byte
 	access     []byte
 	written    []byte
+	exitWrites []egress.Mode
 }
 
 func (h *fakeHost) NodeRunning(context.Context) (bool, error) { return h.running, nil }
@@ -309,6 +311,10 @@ func (h *fakeHost) ReadRegistry() ([]byte, error) { return h.registry, nil }
 func (h *fakeHost) ReadAccess() ([]byte, error)   { return h.access, nil }
 func (h *fakeHost) ReadBody() ([]byte, error)     { return h.body, nil }
 func (h *fakeHost) WriteBody(b []byte) error      { h.written = b; return nil }
+func (h *fakeHost) WriteExitWant(m egress.Mode) error {
+	h.exitWrites = append(h.exitWrites, m)
+	return nil
+}
 
 type fakeProber struct {
 	target, control Reach

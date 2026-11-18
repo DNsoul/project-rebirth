@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"awgrotator/internal/egress"
 	"awgrotator/internal/fleet"
 	"awgrotator/internal/proto"
 )
@@ -120,6 +121,11 @@ type Manager struct {
 	currentKnown     bool
 	lastCurrentCheck time.Time
 	lastVerdict      Verdict
+
+	// The way out the node was last told to use, and how it last stood there.
+	exitTold     bool
+	exitToldMode egress.Mode
+	lastExit     egress.State
 
 	tracker      *Tracker
 	lastLocal    time.Time
@@ -240,6 +246,7 @@ func (m *Manager) Tick(ctx context.Context) error {
 	}()
 
 	m.pollInbox(ctx, now)
+	m.syncExit()
 
 	if m.revoked() {
 		m.log().Error("this server's key has been revoked by the operator; removing this server")

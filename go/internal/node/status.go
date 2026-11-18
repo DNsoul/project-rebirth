@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"awgrotator/internal/egress"
 	"awgrotator/internal/splitdns"
 )
 
@@ -67,6 +68,10 @@ type Status struct {
 	// Reach is where the node answers the outside check over UDP, or nil when
 	// it does not.
 	Reach *ReachStatus `json:"reach,omitempty"`
+
+	// Exit is where the clients' traffic leaves from: what was asked and what
+	// is so. Nodes older than this field leave it out.
+	Exit *egress.Status `json:"exit,omitempty"`
 }
 
 // AnyConnected reports whether at least one client is currently up.

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"awgrotator/internal/cloud"
+	"awgrotator/internal/egress"
 )
 
 // The operator's bot runs on its own goroutine next to the manager. It never
@@ -47,6 +48,11 @@ type Snapshot struct {
 	// server runs the bot. Known says whether that has been found out yet.
 	Current      bool
 	CurrentKnown bool
+
+	// ExitWant is the way out the policy asks for; Exit is how it stands on the
+	// node, nil when the node does not say (an older node, or no status).
+	ExitWant egress.Mode
+	Exit     *egress.Status
 }
 
 // ActionKind is what the operator asked for.
@@ -70,9 +76,10 @@ type Action struct {
 	// servers, because the bot moved over in between, acts once.
 	ID string
 
-	Region    string // ActMove
-	AutoAge   *bool  // ActPolicy
-	AutoBlock *bool  // ActPolicy
+	Region    string       // ActMove
+	AutoAge   *bool        // ActPolicy
+	AutoBlock *bool        // ActPolicy
+	Exit      *egress.Mode // ActPolicy
 
 	// Done is told the outcome, on the manager's goroutine. It must not block.
 	Done func(Result)
@@ -105,6 +112,7 @@ const (
 	EventMovePublished EventKind = "move_published" // this server handed over
 	EventCurrent       EventKind = "current"        // this server took over
 	EventHealth        EventKind = "health"
+	EventExit          EventKind = "exit" // the clients' way out changed
 )
 
 // Event is one such thing.
@@ -116,6 +124,7 @@ type Event struct {
 	Generation int
 	Health     Verdict
 	Err        string
+	Exit       egress.State // EventExit: how it stands now
 }
 
 // ErrBusy is returned when the operator's actions are coming faster than the
@@ -201,6 +210,9 @@ func (m *Manager) Apply(ctx context.Context, a Action) {
 		if a.AutoBlock != nil {
 			p.AutoBlock = *a.AutoBlock
 		}
+		if a.Exit != nil {
+			p.Exit = string(*a.Exit)
+		}
 		if err := p.Normalize(); err != nil {
 			done(Result{Err: err})
 			return
@@ -214,8 +226,10 @@ func (m *Manager) Apply(ctx context.Context, a Action) {
 				return
 			}
 		}
-		m.log().Info("the operator changed automatic moves", "auto_age", p.AutoAge, "auto_block", p.AutoBlock)
+		m.log().Info("the operator changed the policy", "auto_age", p.AutoAge, "auto_block", p.AutoBlock, "exit", p.ExitMode())
 		m.statusDue = true
+		// The node is told at once rather than at the next pass.
+		m.syncExit()
 		done(Result{})
 
 	case ActCheck:
@@ -307,8 +321,44 @@ func (m *Manager) publishSnapshot(ctx context.Context) {
 	if next, ok := NextAutoMove(m.Cfg.Policy, m.Cfg.CreatedTime(), time.Duration(j.AgeJitterSec)*time.Second, m.Cfg.PaidUntil()); ok {
 		s.NextAutoMove = next
 	}
+	s.ExitWant = m.Cfg.Policy.ExitMode()
 	if st, err := m.Host.NodeStatus(ctx); err == nil {
 		s.Node = Summarize(st)
+		s.Exit = st.Exit
+		m.noteExit(st.Exit)
 	}
 	m.snap.Store(s)
+}
+
+// syncExit tells the node which way out the policy asks for, whenever that has
+// not been told yet: at the first pass after the manager starts (a replacement
+// included) and after the operator changes it.
+func (m *Manager) syncExit() {
+	want := m.Cfg.Policy.ExitMode()
+	if m.exitTold && want == m.exitToldMode {
+		return
+	}
+	if err := m.Host.WriteExitWant(want); err != nil {
+		m.log().Error("could not tell the node which way out to use", "want", want, "error", err)
+		return
+	}
+	m.exitTold, m.exitToldMode = true, want
+}
+
+// noteExit tells the operator when the clients' way out changes on the node:
+// WARP came up, fell back to direct, came back, or was switched off. The step
+// in between ("starting") is not news.
+func (m *Manager) noteExit(st *egress.Status) {
+	if st == nil {
+		return
+	}
+	was := m.lastExit
+	if st.State == egress.StateStarting || st.State == was {
+		return
+	}
+	m.lastExit = st.State
+	if was == "" {
+		return // what the manager found when it started, not a change
+	}
+	m.emit(Event{Kind: EventExit, Exit: st.State, Err: st.Error})
 }

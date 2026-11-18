@@ -16,6 +16,7 @@ import (
 
 	"awgrotator/internal/cloud"
 	"awgrotator/internal/deploy"
+	"awgrotator/internal/egress"
 	"awgrotator/internal/enroll"
 	"awgrotator/internal/fleet"
 	"awgrotator/internal/node"
@@ -91,6 +92,10 @@ type Host interface {
 	// that it can be republished.
 	ReadBody() ([]byte, error)
 	WriteBody(body []byte) error
+
+	// WriteExitWant tells the node where the clients' traffic is to leave
+	// from; the node picks it up within seconds.
+	WriteExitWant(m egress.Mode) error
 }
 
 // ErrCapReached is returned when moving would exceed the server ceiling.

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"awgrotator/internal/cloud"
+	"awgrotator/internal/egress"
 	"awgrotator/internal/lifecycle"
 	"awgrotator/internal/node"
 	"awgrotator/internal/proto"
@@ -172,6 +173,7 @@ func (b *Bot) statusView(ctx context.Context) view {
 		fmt.Fprintf(&out, " (следующий около %s)", stamp(s.NextAutoMove))
 	}
 	fmt.Fprintf(&out, "; при блокировке: %s.\n", onOff(s.AutoBlock))
+	fmt.Fprintf(&out, "Выход в интернет: %s.\n", exitWords(s.ExitWant, s.Exit))
 	fmt.Fprintf(&out, "Сертификат действует ещё %d дн.\n", s.CertDaysLeft)
 	if m := s.LastMove; m != nil {
 		fmt.Fprintf(&out, "Последний переезд: %s, %s, итог: %s.", stamp(time.Unix(m.At, 0)), triggerWords(m.Trigger), m.State)
@@ -301,18 +303,21 @@ func (b *Bot) requestsView(ctx context.Context) view {
 	return view{text: out.String(), kb: kb}
 }
 
-func (b *Bot) serviceView() view { return b.serviceViewWith(nil, nil) }
+func (b *Bot) serviceView() view { return b.serviceViewWith(nil, nil, nil) }
 
-// serviceViewWith draws the maintenance menu, with the automatic-move switches
-// as given when they have just been changed.
-func (b *Bot) serviceViewWith(age, block *bool) view {
+// serviceViewWith draws the maintenance menu, with the switches as given when
+// they have just been changed.
+func (b *Bot) serviceViewWith(age, block *bool, exit *egress.Mode) view {
 	s := b.Manager.Snapshot()
-	autoAge, autoBlock := s.AutoAge, s.AutoBlock
+	autoAge, autoBlock, exitWant := s.AutoAge, s.AutoBlock, s.ExitWant
 	if age != nil {
 		autoAge = *age
 	}
 	if block != nil {
 		autoBlock = *block
+	}
+	if exit != nil {
+		exitWant = *exit
 	}
 	toggle := func(label string, on bool, op string) telegram.Button {
 		if on {
@@ -329,9 +334,43 @@ func (b *Bot) serviceViewWith(age, block *bool) view {
 		{btn("Перезапустить туннель", "rs")},
 		{toggle("Автопереезд по возрасту", autoAge, "pa")},
 		{toggle("Переезд при блокировке", autoBlock, "pb")},
+		{toggle("Выход через WARP", exitWant == egress.WARP, "px")},
 		{btn("Проверить доступность из России", "ck")},
 		backRow,
 	}}
+}
+
+// confirmExit asks before the way out is switched: every open connection on
+// every device breaks once.
+func confirmExit(on bool) view {
+	if on {
+		return confirmView("Выпускать трафик устройств через Cloudflare WARP? Сайты и приложения увидят адрес Cloudflare, а не адрес сервера. "+
+			"Открытые соединения оборвутся и через несколько секунд восстановятся сами.",
+			"Да, включить", "px!:on:"+nonce(), "m:service")
+	}
+	return confirmView("Выпускать трафик устройств напрямую, с адреса сервера? "+
+		"Открытые соединения оборвутся и через несколько секунд восстановятся сами.",
+		"Да, выключить", "px!:off:"+nonce(), "m:service")
+}
+
+// exitWords says where the devices' traffic leaves from.
+func exitWords(want egress.Mode, st *egress.Status) string {
+	if want != egress.WARP {
+		if st != nil && st.State != egress.StateDirect {
+			return "переключаю на прямой, с адреса сервера"
+		}
+		return "напрямую, с адреса сервера"
+	}
+	if st == nil {
+		return "просили через WARP, но сервер не сообщает, как идут дела"
+	}
+	switch st.State {
+	case egress.StateWARP:
+		return "через WARP, сайты видят адрес Cloudflare"
+	case egress.StateFallback:
+		return fmt.Sprintf("WARP не отвечает с %s, временно напрямую", stamp(st.Since))
+	}
+	return "включаю WARP"
 }
 
 func (b *Bot) regionView() view {
@@ -445,6 +484,17 @@ func eventText(e lifecycle.Event) string {
 			return "Сервер снова в порядке."
 		}
 		return "Состояние сервера: " + string(e.Health)
+	case lifecycle.EventExit:
+		switch e.Exit {
+		case egress.StateWARP:
+			return "Выход через WARP работает: сайты видят адрес Cloudflare, а не адрес сервера."
+		case egress.StateFallback:
+			return "WARP не отвечает. Устройства временно выходят в интернет напрямую, с адреса сервера. " +
+				"Когда WARP заработает, вернусь на него сам."
+		case egress.StateDirect:
+			return "Выход в интернет теперь напрямую, с адреса сервера."
+		}
+		return "Выход в интернет: " + string(e.Exit)
 	}
 	return string(e.Kind)
 }

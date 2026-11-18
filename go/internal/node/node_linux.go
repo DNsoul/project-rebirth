@@ -23,8 +23,10 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 
 	"awgrotator/internal/awg"
+	"awgrotator/internal/egress"
 	"awgrotator/internal/enroll"
 	"awgrotator/internal/proto"
+	"awgrotator/internal/warp"
 )
 
 // natTable is the nftables table this node owns. Nothing else is touched, so
@@ -65,6 +67,11 @@ type Node struct {
 	reach     atomic.Pointer[ReachResponder]
 	reachStop context.CancelFunc
 	reachDone chan struct{}
+
+	// Where the clients' traffic leaves from; see package egress.
+	exit     *egress.Controller
+	exitStop context.CancelFunc
+	exitDone chan struct{}
 }
 
 // New returns a node for the given configuration.
@@ -155,7 +162,66 @@ func (n *Node) Start(ctx context.Context) error {
 		}
 		n.log.Info("configured", "step", step.what)
 	}
+	n.startExit()
 	return nil
+}
+
+// startExit runs the choice of the clients' way out on its own goroutine: a
+// registration with WARP or a check through it can take many seconds, and the
+// status must go on being written meanwhile, or the manager takes the node for
+// stuck and restarts it.
+func (n *Node) startExit() {
+	log := n.log.With("component", "exit")
+	ctl := &egress.Controller{
+		Sys:     &egress.LinuxSystem{Subnet: n.cfg.Subnet, Log: log},
+		Account: egress.Accounts(warp.DefaultAccountPath, &warp.Client{}, log),
+		Log:     log,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	n.exit, n.exitStop, n.exitDone = ctl, cancel, done
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(StatusInterval)
+		defer ticker.Stop()
+		lastErr := ""
+		for {
+			want, err := egress.ReadWant(egress.DefaultWantPath)
+			if e := errString(err); e != lastErr {
+				lastErr = e
+				if err != nil {
+					log.Warn("what the manager wants of the way out cannot be read; going out directly", "error", err)
+				}
+			}
+			ctl.Step(ctx, want)
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+}
+
+// stopExit stops the choice and sends the clients out directly, taking the
+// tunnel to WARP down.
+func (n *Node) stopExit() {
+	if n.exitStop == nil {
+		return
+	}
+	n.exitStop()
+	<-n.exitDone
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	n.exit.Close(ctx)
+	n.exitStop, n.exitDone = nil, nil
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // Close tears the device down. The nftables table is left in place: systemd
@@ -169,6 +235,7 @@ func (n *Node) Close() error {
 	n.stopReach()
 	n.stopControl()
 	n.stopEnroll()
+	n.stopExit()
 
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -192,6 +259,7 @@ func (n *Node) Status() (Status, error) {
 	n.mu.Lock()
 	dev := n.dev
 	started := n.startedAt
+	exit := n.exit
 	n.mu.Unlock()
 
 	if dev == nil {
@@ -218,6 +286,10 @@ func (n *Node) Status() (Status, error) {
 	}
 	if r := n.reach.Load(); r != nil {
 		st.Reach = &ReachStatus{Port: r.Port, Name: r.Name, Answered: r.Answered()}
+	}
+	if exit != nil {
+		es := exit.Status()
+		st.Exit = &es
 	}
 	return st, nil
 }

@@ -12,6 +12,7 @@ import (
 
 	"awgrotator/internal/cloud"
 	"awgrotator/internal/deploy"
+	"awgrotator/internal/egress"
 	"awgrotator/internal/enroll"
 	"awgrotator/internal/node"
 	"awgrotator/internal/splitplan"
@@ -136,6 +137,14 @@ type SystemHost struct {
 
 	// StatusPath overrides where the node's status is read from.
 	StatusPath string
+
+	// ExitWantPath overrides where the node is told which way out to use.
+	ExitWantPath string
+}
+
+// WriteExitWant implements Host.
+func (h *SystemHost) WriteExitWant(m egress.Mode) error {
+	return egress.WriteWant(orDefault(h.ExitWantPath, egress.DefaultWantPath), m)
 }
 
 func (h *SystemHost) statusPath() string { return orDefault(h.StatusPath, node.DefaultStatusPath) }
