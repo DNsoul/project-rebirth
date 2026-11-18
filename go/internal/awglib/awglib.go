@@ -241,6 +241,10 @@ type Tunnel struct {
 	dev  *device.Device
 	bind conn.Bind
 	peer device.NoisePublicKey
+
+	// rebinds counts calls of Rebind, so that the follow-up of one stops when
+	// another has begun.
+	rebinds uint64
 }
 
 // Up starts a client on tunDev, which is closed with the tunnel.
@@ -275,6 +279,15 @@ const (
 	rebindPause = 200 * time.Millisecond
 )
 
+// rebindChase is how Rebind follows its handshake up: after each pause with no
+// answer it sends the handshake again. The library on its own waits five seconds
+// before it tries again, and on the user's phone every change to mobile data
+// took five and a half seconds to be answered while changes to Wi-Fi took a
+// third of one (2026-11-18 logs): the first handshake on a network that has
+// just come up gets lost, and the next one is the first to get through. A
+// variable so that tests can see it.
+var rebindChase = []time.Duration{time.Second, time.Second, time.Second}
+
 // ErrClosed is what Rebind says about a tunnel that has been closed.
 var ErrClosed = errors.New("the tunnel is closed")
 
@@ -297,7 +310,9 @@ var ErrClosed = errors.New("the tunnel is closed")
 // five seconds of the last one, and none for two minutes while it trusts its
 // session; and its clocks stop while the phone sleeps, so after a night it may
 // trust a session the server dropped long ago. The keys are let go first, so the
-// handshake goes out now and whatever is sent meanwhile waits for it.
+// handshake goes out now and whatever is sent meanwhile waits for it. If no
+// answer comes, it goes out again after a second, and again (see rebindChase),
+// rather than after the library's five.
 //
 // The new sockets have new descriptors (see SocketFDs); where the system has to
 // be told to keep them out of the tunnel, that has to be done again.
@@ -318,11 +333,60 @@ func (t *Tunnel) Rebind() error {
 	if err != nil {
 		return fmt.Errorf("open the sockets again: %w", err)
 	}
+	before := t.handshakeAtLocked()
+	t.handshakeNowLocked()
+	t.rebinds++
+	go t.chase(t.dev, t.rebinds, before)
+	return nil
+}
+
+// handshakeNowLocked sends a handshake at once. The keys are let go first: that
+// also clears the library's note of when it last sent one, which otherwise holds
+// back another for five seconds.
+func (t *Tunnel) handshakeNowLocked() {
 	if p := t.dev.LookupPeer(t.peer); p != nil {
 		p.ExpireCurrentKeypairs()
 		_ = p.SendHandshakeInitiation(false)
 	}
-	return nil
+}
+
+// chase sends the handshake again after each pause of rebindChase, as long as
+// the server has not answered since before, the tunnel is still the one it was
+// and no later Rebind has taken over.
+func (t *Tunnel) chase(dev *device.Device, rebind uint64, before time.Time) {
+	for _, pause := range rebindChase {
+		time.Sleep(pause)
+		t.mu.Lock()
+		if t.dev != dev || t.rebinds != rebind || t.handshakeAtLocked().After(before) {
+			t.mu.Unlock()
+			return
+		}
+		t.handshakeNowLocked()
+		t.mu.Unlock()
+	}
+}
+
+// handshakeAtLocked is the exact time of the last completed handshake, or the
+// zero time. LatestHandshake reports whole seconds, as the app wants; telling
+// whether an answer came after a moment needs the rest.
+func (t *Tunnel) handshakeAtLocked() time.Time {
+	out, err := t.dev.IpcGet()
+	if err != nil {
+		return time.Time{}
+	}
+	var sec, nsec int64
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if v, ok := strings.CutPrefix(line, "last_handshake_time_sec="); ok {
+			sec, _ = strconv.ParseInt(v, 10, 64)
+		} else if v, ok := strings.CutPrefix(line, "last_handshake_time_nsec="); ok {
+			nsec, _ = strconv.ParseInt(v, 10, 64)
+		}
+	}
+	if sec == 0 && nsec == 0 {
+		return time.Time{}
+	}
+	return time.Unix(sec, nsec)
 }
 
 // LatestHandshake is when the server last completed a handshake with this

@@ -198,6 +198,9 @@ class WindowsTunnelDriver implements TunnelDriver {
   @override
   Future<void> rebind(String name) async {}
 
+  @override
+  bool get rebindMakesHandshake => false;
+
   /// Every tunnel has its own adapter: a new one leaves the old one working.
   @override
   bool get oneAtATime => false;

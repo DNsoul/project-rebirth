@@ -58,6 +58,11 @@ abstract class TunnelDriver {
   /// tunnel, and a no-op where the system's own client already does this.
   Future<void> rebind(String name);
 
+  /// Whether [rebind] makes a handshake at once, so that its answer can be
+  /// waited for. True on Android, where Rebirth's own library does it; false on
+  /// Windows, where [rebind] does nothing and the tunnel service is left to it.
+  bool get rebindMakesHandshake;
+
   /// What can be told about why the tunnel [name] carries nothing, in words for
   /// the journal: what it has received and sent, and, where the system can say,
   /// which way it sends traffic for [address]. Empty when nothing can be told.

@@ -241,6 +241,19 @@ class ConnectionController implements ConnectionView, ReleaseSource {
   /// before it starts.
   bool _healPending = false;
 
+  /// A poll is reading the settings (and has not yet started a move). Such a
+  /// read is safe to call off: the next look reads them again.
+  bool _pollReading = false;
+
+  /// A health look is dealing with the phone having woken up: the others, and
+  /// the regular poll, leave it to that one.
+  bool _wakeHandling = false;
+
+  /// How long the nudge after the phone has slept waits for the server's answer
+  /// before the usual look takes over. Answers come in a third of a second on
+  /// Wi-Fi and in about five on mobile data (2026-11 logs).
+  static const wakeAnswerWithin = Duration(seconds: 6);
+
   /// The tunnel the system's interface leads into, where a driver has only one
   /// ([TunnelDriver.oneAtATime]): the one installed last.
   String? _interfaceSlot;
@@ -553,7 +566,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
       return;
     }
     _stopTimers();
-    _pollTimer = Timer.periodic(pollEvery, (_) => unawaited(pollNow()));
+    _pollTimer = Timer.periodic(pollEvery, (_) => unawaited(timedPollNow()));
     _healthTimer = Timer.periodic(
       healthEvery,
       (_) => unawaited(checkHealthNow()),
@@ -564,6 +577,25 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     _pollTimer?.cancel();
     _healthTimer?.cancel();
     _pollTimer = _healthTimer = null;
+  }
+
+  /// The regular poll, as its timer runs it. Right after the phone has woken
+  /// the health look goes first, so that a tunnel whose session ran out during
+  /// the sleep is nudged before the settings are read through it; and while a
+  /// look is dealing with a wake, it reads them itself once the tunnel answers.
+  Future<void> timedPollNow() async {
+    final last = _lastHealthAt;
+    if (last != null && _now().difference(last) > healthEvery * 3) {
+      await checkHealthNow();
+    }
+    if (_wakeHandling) {
+      return;
+    }
+    final read = _lastRefresh;
+    if (read != null && _now().difference(read) < const Duration(seconds: 30)) {
+      return;
+    }
+    await pollNow();
   }
 
   /// Looks for a new server and moves to it if there is one.
@@ -579,6 +611,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     _lastRefresh = _now();
 
     final ConfigBody body;
+    _pollReading = true;
     try {
       body = await _fetchBody(force: false, token: token);
     } on Cancelled {
@@ -586,6 +619,8 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     } catch (e) {
       _log('poll: could not read the configuration: $e');
       return;
+    } finally {
+      _pollReading = false;
     }
     if (!_isDifferentServer(body, active.body)) {
       return;
@@ -673,6 +708,25 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     final woke =
         before != null && checkedAt.difference(before) > healthEvery * 3;
 
+    // One look deals with a wake, and the others keep out of its way. On waking
+    // every timer fires at once; a second look showed "coming back" while the
+    // first was still nudging, and a poll read the settings through the tunnel
+    // before the nudge (emulator, 2026-11-18). The claim is made before anything
+    // is awaited, so whichever look comes first holds it.
+    if (_wakeHandling) {
+      return;
+    }
+    final owns = woke && tunnel.rebindMakesHandshake;
+    if (owns) _wakeHandling = true;
+    try {
+      await _look(active, woke);
+    } finally {
+      if (owns) _wakeHandling = false;
+    }
+  }
+
+  /// The health check proper; [woke] says the phone has just slept.
+  Future<void> _look(_Active active, bool woke) async {
     final DateTime? hs;
     try {
       hs = await tunnel.latestHandshake(active.slot);
@@ -714,6 +768,27 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         recovering: heal || _healPending || _waitingForNetwork,
       );
     }
+    // After a sleep the session has run out, and whatever is sent first makes the
+    // new handshake on its way. On the user's phone that first send was the look
+    // at the settings, and it failed every tenth time, more often the longer the
+    // phone had slept: a quarter of the looks after 10-30 minutes (2026-11-18
+    // logs), although the tunnel answered right after. So where a nudge makes a
+    // handshake at once, the tunnel is nudged first, the way a change of network
+    // is answered (26 of 26 answered in that log), and only then is anything
+    // sent through it. A nudge that gets no answer leaves things to the look
+    // below, as before.
+    if (woke && heal && tunnel.rebindMakesHandshake) {
+      if (await _nudgeAfterSleep(active)) {
+        _healPending = false;
+        _setContact(lost: false);
+        final last = _lastRefresh;
+        if (last == null ||
+            _now().difference(last) > const Duration(seconds: 30)) {
+          await pollNow();
+        }
+        return;
+      }
+    }
     if (lost && _networkAvailable) {
       final last = _lastRefresh;
       if (last == null ||
@@ -725,8 +800,9 @@ class ConnectionController implements ConnectionView, ReleaseSource {
         // needed waking has made its handshake on the way. On the user's phone
         // half of the repairs came right after such a read had worked, and tore
         // down a tunnel that had just proved itself (2026-11 logs). A tunnel
-        // that found a new server on the way has moved, and is fine too.
-        if (_stopping || !identical(_active, active)) {
+        // that found a new server on the way has moved, and is fine too. A change
+        // of network that came meanwhile is being answered already.
+        if (_stopping || !identical(_active, active) || _networkRunning) {
           _healPending = false;
           return;
         }
@@ -748,6 +824,45 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     }
   }
 
+  /// Moves the tunnel to a new port with a handshake made at once, and waits a
+  /// few seconds for the server's answer: the light way back after the phone has
+  /// slept. Nothing is torn down and nothing is shown. True when it answered.
+  Future<bool> _nudgeAfterSleep(_Active active) => _exclusive('wake', () async {
+    if (_stopping ||
+        !identical(_active, active) ||
+        _status.phase != Phase.connected) {
+      return false;
+    }
+    final token = _token;
+    final since = _now();
+    _log(
+      'wake: the last handshake is old, asking the tunnel to find the server',
+    );
+    try {
+      await tunnel.rebind(active.slot);
+    } on Object catch (e) {
+      _log('wake: the tunnel could not be nudged: $e');
+      return false;
+    }
+    final bool answered;
+    try {
+      answered = await _waitHandshakeAfter(
+        active.slot,
+        since,
+        wakeAnswerWithin,
+        token,
+      );
+    } on Cancelled {
+      return false;
+    }
+    _log(
+      answered
+          ? 'wake: the server answered'
+          : 'wake: no answer in ${wakeAnswerWithin.inSeconds} s',
+    );
+    return answered;
+  });
+
   // ----------------------------------------------------------------- network
 
   /// The network the phone reaches the internet by has changed, or gone.
@@ -764,6 +879,16 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     _lastEventAt = _now();
     _networkAvailable = available;
     _networkGoneAt = available ? null : (_networkGoneAt ?? _now());
+    // A look at the settings under way went out on the old path and can only
+    // fail, slowly: on the user's phone the repair waited behind such reads for
+    // 6, 10 and 32 seconds (2026-11-18 logs). It is called off; the next look
+    // reads the settings again. A move to a new server, once begun, is not.
+    if (_running == 'poll' && _pollReading) {
+      _log(
+        'network: calling off the look at the settings, it left on the old path',
+      );
+      _token.cancel();
+    }
     if (_networkRunning) {
       _networkAgain = true;
       return;
@@ -969,6 +1094,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
 
     GistSnapshot? snapshot;
     String? gistProblem;
+    String? gistDetail;
     try {
       snapshot = await token.guard(gist.fetch(etag: force ? null : state.etag));
       if (snapshot == null && state.configBody == null) {
@@ -977,8 +1103,11 @@ class ConnectionController implements ConnectionView, ReleaseSource {
       }
     } on GistException catch (e) {
       gistProblem = e.message;
+      gistDetail = e.detail;
     }
     token.check();
+    // The screen gets the words for a person; the journal gets what happened.
+    final why = gistDetail == null ? '' : ' ($gistDetail)';
 
     if (snapshot != null) {
       final accepted = await _acceptAll(snapshot, state);
@@ -992,9 +1121,12 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     final cached = state.configBody;
     if (cached != null && state.configEpoch >= state.proto.minEpoch) {
       if (gistProblem != null) {
-        _log('using the saved configuration: $gistProblem');
+        _log('using the saved configuration: $gistProblem$why');
       }
       return ConfigBody.parse(cached);
+    }
+    if (why.isNotEmpty) {
+      _log('the configuration could not be read:$why');
     }
     throw ConnectException(
       gistProblem ??

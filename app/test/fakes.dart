@@ -359,6 +359,9 @@ class FakeGist implements GistSource {
   /// Called at every read: on a phone the read goes through the tunnel.
   void Function()? onFetch;
 
+  /// With [down]: what the system said, for the journal.
+  String? downDetail;
+
   @override
   Future<GistSnapshot?> fetch({String? etag}) async {
     fetches++;
@@ -369,7 +372,7 @@ class FakeGist implements GistSource {
       await gate.future;
       fetchWaiting = false;
     }
-    if (down) throw GistException('Нет связи с GitHub.');
+    if (down) throw GistException('Нет связи с GitHub.', detail: downDetail);
     final snapshot = current;
     if (snapshot == null) throw GistException('Адрес с настройками не найден.');
     if (etag != null && etag == snapshot.etag) {
@@ -442,6 +445,9 @@ class FakeTunnel implements TunnelDriver {
   /// With [paced]: whether a nudge makes a handshake at once. Off for Windows,
   /// where nudging is left to the tunnel service.
   bool nudgeHandshakes = true;
+
+  @override
+  bool get rebindMakesHandshake => nudgeHandshakes;
 
   final Map<String, DateTime> _handshakeAt = {};
 

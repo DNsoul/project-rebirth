@@ -35,13 +35,26 @@ class GistSnapshot {
 }
 
 class GistException implements Exception {
-  GistException(this.message);
+  GistException(this.message, {this.detail});
 
+  /// What the person is told.
   final String message;
+
+  /// What actually went wrong, for the journal only: the system's own words and
+  /// how long it took. "No connection" on the screen covers a name that could not
+  /// be looked up, a connection refused and a connection that hung, and those
+  /// point at different causes (2026-11 logs: every failed read after the phone
+  /// slept said the same "no connection", and nothing more could be learnt).
+  final String? detail;
 
   @override
   String toString() => message;
 }
+
+/// The system's words for a failed read, with where and how long, for
+/// [GistException.detail].
+String _failure(String where, Object e, Stopwatch sw) =>
+    '$where: $e after ${sw.elapsedMilliseconds} ms';
 
 abstract class GistSource {
   /// Reads the gist. Returns null when [etag] says nothing changed. Throws
@@ -68,6 +81,7 @@ class GithubGistSource implements GistSource {
   Future<GistSnapshot?> fetch({String? etag}) async {
     final Map<String, Object?> json;
     final String? newEtag;
+    final sw = Stopwatch()..start();
     try {
       final request = await _client
           .getUrl(Uri.parse('$baseUrl/gists/$gistId'))
@@ -109,21 +123,30 @@ class GithubGistSource implements GistSource {
       newEtag = response.headers.value(HttpHeaders.etagHeader);
     } on GistException {
       rethrow;
-    } on TimeoutException {
-      throw GistException('GitHub не отвечает. Повторите позже.');
-    } on SocketException {
-      throw GistException('Нет связи с GitHub. Проверьте интернет.');
-    } on HandshakeException {
+    } on TimeoutException catch (e) {
+      throw GistException(
+        'GitHub не отвечает. Повторите позже.',
+        detail: _failure('GitHub', e, sw),
+      );
+    } on SocketException catch (e) {
+      throw GistException(
+        'Нет связи с GitHub. Проверьте интернет.',
+        detail: _failure('GitHub', e, sw),
+      );
+    } on HandshakeException catch (e) {
       throw GistException(
         'Не удалось установить защищённое соединение с GitHub. Проверьте дату и время на устройстве.',
+        detail: _failure('GitHub', e, sw),
       );
     } on HttpException catch (e) {
       throw GistException(
         'Не удалось прочитать настройки. Повторите позже. (${e.message})',
+        detail: _failure('GitHub', e, sw),
       );
-    } on FormatException {
+    } on FormatException catch (e) {
       throw GistException(
         'GitHub ответил не так, как ожидалось. Повторите позже.',
+        detail: _failure('GitHub', e, sw),
       );
     }
 
@@ -192,21 +215,24 @@ class HttpFileMirror implements GistSource {
   @override
   Future<GistSnapshot?> fetch({String? etag}) async {
     final List<String?> files;
+    final sw = Stopwatch()..start();
     try {
       files = await Future.wait([_read('c'), _read('r'), _read('u')]);
     } on GistException {
       rethrow;
-    } on TimeoutException {
-      throw GistException('$name не отвечает.');
-    } on SocketException {
-      throw GistException('Нет связи с $name.');
-    } on HandshakeException {
+    } on TimeoutException catch (e) {
+      throw GistException('$name не отвечает.', detail: _failure(name, e, sw));
+    } on SocketException catch (e) {
+      throw GistException('Нет связи с $name.', detail: _failure(name, e, sw));
+    } on HandshakeException catch (e) {
       throw GistException(
         'Не удалось установить защищённое соединение с $name. Проверьте дату и время на устройстве.',
+        detail: _failure(name, e, sw),
       );
     } on HttpException catch (e) {
       throw GistException(
         'Не удалось прочитать настройки с $name. (${e.message})',
+        detail: _failure(name, e, sw),
       );
     }
 
@@ -311,6 +337,7 @@ class MirroredSource implements GistSource {
 
     final answered = <int>[];
     final problems = <String>[];
+    final details = <String>[];
     for (var i = 0; i < n; i++) {
       final outcome = outcomes[i];
       if (outcome == null) continue;
@@ -318,10 +345,14 @@ class MirroredSource implements GistSource {
         answered.add(i);
       } else {
         problems.add(outcome.error!);
+        if (outcome.detail != null) details.add(outcome.detail!);
       }
     }
     if (answered.isEmpty) {
-      throw GistException(problems.join(' '));
+      throw GistException(
+        problems.join(' '),
+        detail: details.isEmpty ? null : details.join('; '),
+      );
     }
 
     final next = [...tags];
@@ -362,18 +393,19 @@ class MirroredSource implements GistSource {
 }
 
 class _Outcome {
-  _Outcome._(this.snapshot, this.error);
+  _Outcome._(this.snapshot, this.error, [this.detail]);
 
   static _Outcome answered(GistSnapshot? snapshot) =>
       _Outcome._(snapshot, null);
 
-  static _Outcome failed(Object error, [StackTrace? _]) => _Outcome._(
-    null,
-    error is GistException ? error.message : error.toString(),
-  );
+  static _Outcome failed(Object error, [StackTrace? _]) =>
+      error is GistException
+      ? _Outcome._(null, error.message, error.detail)
+      : _Outcome._(null, error.toString());
 
   final GistSnapshot? snapshot;
   final String? error;
+  final String? detail;
 }
 
 /// Where the app reads the signed files from: the gist, and the other places the

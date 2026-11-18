@@ -220,4 +220,4 @@ func awgFree(p *C.char) { C.free(unsafe.Pointer(p)) }
 // it was built with.
 //
 //export awgVersion
-func awgVersion() *C.char { return C.CString("awglib 3") }
+func awgVersion() *C.char { return C.CString("awglib 4") }

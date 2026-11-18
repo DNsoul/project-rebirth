@@ -55,6 +55,9 @@ class AndroidTunnelDriver implements TunnelDriver {
   bool get oneAtATime => true;
 
   @override
+  bool get rebindMakesHandshake => true;
+
+  @override
   Future<void> install({required String name, required String conf}) async {
     _checkName(name);
     final plan = planFromConf(conf);

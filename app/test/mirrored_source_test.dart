@@ -160,6 +160,42 @@ void main() {
     });
   });
 
+  group('a read that fails', () {
+    late int closedPort;
+
+    setUp(() async {
+      // A port nobody listens on: the connection is refused at once.
+      final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      closedPort = s.port;
+      await s.close();
+    });
+
+    test('from GitHub keeps its words for the person and tells the journal '
+        'what the system said, and how long it took', () async {
+      final source = GithubGistSource(
+        'abc',
+        baseUrl: 'http://127.0.0.1:$closedPort',
+      );
+      final e = await source.fetch().then<GistException?>(
+        (_) => null,
+        onError: (Object e) => e as GistException,
+      );
+      expect(e!.message, 'Нет связи с GitHub. Проверьте интернет.');
+      expect(e.detail, startsWith('GitHub: SocketException'));
+      expect(e.detail, matches(RegExp(r'after \d+ ms$')));
+    });
+
+    test('from a mirror does the same', () async {
+      final source = HttpFileMirror('http://127.0.0.1:$closedPort/{file}');
+      final e = await source.fetch().then<GistException?>(
+        (_) => null,
+        onError: (Object e) => e as GistException,
+      );
+      expect(e!.message, 'Нет связи с GitLab.');
+      expect(e.detail, startsWith('GitLab: SocketException'));
+    });
+  });
+
   group('reading from several places at once', () {
     late _Place github;
     late _Place gitlab;
@@ -172,6 +208,33 @@ void main() {
         github,
         gitlab,
       ], straggler: const Duration(milliseconds: 30));
+    });
+
+    test('when every place fails, the person gets each place\'s words and the '
+        'journal gets what each really said', () async {
+      github.error = GistException(
+        'Нет связи с GitHub. Проверьте интернет.',
+        detail: 'GitHub: SocketException: Failed host lookup after 10012 ms',
+      );
+      gitlab.error = GistException(
+        'Нет связи с GitLab.',
+        detail: 'GitLab: TimeoutException after 20001 ms',
+      );
+
+      final e = await source.fetch().then<GistException?>(
+        (_) => null,
+        onError: (Object e) => e as GistException,
+      );
+      expect(
+        e!.message,
+        'Нет связи с GitHub. Проверьте интернет. Нет связи с GitLab.',
+      );
+      expect(
+        e.detail,
+        'GitHub: SocketException: Failed host lookup after 10012 ms; '
+        'GitLab: TimeoutException after 20001 ms',
+      );
+      expect(e.toString(), e.message, reason: 'the screen shows no detail');
     });
 
     test('hands back what each place has, with one etag for all', () async {

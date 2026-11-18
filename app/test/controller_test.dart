@@ -529,12 +529,42 @@ void main() {
       },
     );
 
+    test('the journal says what the system said when the gist could not be '
+        'read; the screen does not', () async {
+      await rig.controller.connect();
+      rig.gist
+        ..down = true
+        ..downDetail =
+            'GitHub: SocketException: Failed host lookup after 10012 ms';
+
+      await rig.controller.pollNow();
+
+      expect(
+        rig.logs,
+        contains(
+          'using the saved configuration: Нет связи с GitHub. '
+          '(GitHub: SocketException: Failed host lookup after 10012 ms)',
+        ),
+      );
+      expect(rig.status.message, isNot(contains('SocketException')));
+    });
+
     test('and an honest failure without one', () async {
       final fresh = await Rig.create();
-      fresh.gist.down = true;
+      fresh.gist
+        ..down = true
+        ..downDetail = 'GitHub: SocketException: Connection refused after 3 ms';
       await fresh.controller.connect();
       expect(fresh.status.phase, Phase.failed);
       expect(fresh.status.message, contains('GitHub'));
+      expect(fresh.status.message, isNot(contains('SocketException')));
+      expect(
+        fresh.logs,
+        contains(
+          'the configuration could not be read: '
+          '(GitHub: SocketException: Connection refused after 3 ms)',
+        ),
+      );
     });
   });
 
@@ -1410,31 +1440,176 @@ void main() {
       expect(rig.tunnel.carries('awgr-a'), isTrue);
     });
 
-    test(
-      'a tunnel that only needed waking is left alone, and nothing is shown',
-      () async {
-        await rig.controller.connect();
-        await rig.controller
-            .checkHealthNow(); // the look before the phone slept
-        rig.clock.advance(const Duration(minutes: 14)); // asleep: no handshakes
-        rig.tunnel.log.clear();
-        final seen = <AppStatus>[];
-        final sub = rig.controller.statusStream.listen(seen.add);
+    test('after a sleep the tunnel is nudged before anything is sent through '
+        'it, nothing new is made and nothing is shown', () async {
+      await rig.controller.connect();
+      await rig.controller.checkHealthNow(); // the look before the phone slept
+      rig.clock.advance(const Duration(minutes: 14)); // asleep: no handshakes
+      rig.tunnel.log.clear();
+      rig.gist.onFetch = () {
+        rig.tunnel.log.add('read the settings');
+        rig.tunnel.traffic();
+      };
+      final seen = <AppStatus>[];
+      final sub = rig.controller.statusStream.listen(seen.add);
 
-        await rig.controller.checkHealthNow();
-        await settle();
-        await sub.cancel();
+      await rig.controller.checkHealthNow();
+      await settle();
+      await sub.cancel();
 
-        expect(
-          rig.tunnel.log,
-          isEmpty,
-          reason:
-              'reading the settings woke the tunnel: no nudge, no new tunnel',
-        );
-        expect(seen.where((s) => s.lostContact || s.recovering), isEmpty);
-        expect(rig.logs, contains('health: the tunnel answered after all'));
-      },
-    );
+      expect(
+        rig.tunnel.log,
+        ['rebind awgr-a', 'read the settings'],
+        reason:
+            'the first thing sent after a sleep made the handshake and got '
+            'lost every tenth time on the user\'s phone: the nudge goes first, '
+            'and no new tunnel is made',
+      );
+      expect(seen.where((s) => s.lostContact || s.recovering), isEmpty);
+      expect(rig.logs, contains('wake: the server answered'));
+      expect(rig.tunnel.carries('awgr-a'), isTrue);
+    });
+
+    test('on waking every timer fires at once: one look nudges, the others '
+        'keep quiet, and the settings are read once, after the nudge', () async {
+      await rig.controller.connect();
+      await rig.controller.checkHealthNow();
+      rig.clock.advance(const Duration(minutes: 14));
+      rig.tunnel.log.clear();
+      rig.gist.onFetch = () {
+        rig.tunnel.log.add('read the settings');
+        rig.tunnel.traffic();
+      };
+      final seen = <AppStatus>[];
+      final sub = rig.controller.statusStream.listen(seen.add);
+
+      // The poll's timer first, as on the emulator, then the health timer twice.
+      await Future.wait([
+        rig.controller.timedPollNow(),
+        rig.controller.checkHealthNow(),
+        rig.controller.checkHealthNow(),
+      ]);
+      await settle();
+      await sub.cancel();
+
+      expect(rig.tunnel.log, ['rebind awgr-a', 'read the settings']);
+      expect(
+        seen.where((s) => s.lostContact || s.recovering),
+        isEmpty,
+        reason: 'a second look showed "coming back" on the emulator',
+      );
+    });
+
+    test('a poll whose timer fires while a look deals with the wake leaves the '
+        'reading to that look', () async {
+      await rig.controller.connect();
+      await rig.controller.checkHealthNow();
+      rig.clock.advance(const Duration(minutes: 14));
+      rig.tunnel.log.clear();
+      rig.gist.onFetch = () {
+        rig.tunnel.log.add('read the settings');
+        rig.tunnel.traffic();
+      };
+
+      // The health timer first this time, then the poll's.
+      await Future.wait([
+        rig.controller.checkHealthNow(),
+        rig.controller.timedPollNow(),
+      ]);
+      await settle();
+
+      expect(rig.tunnel.log, ['rebind awgr-a', 'read the settings']);
+    });
+
+    test('where a nudge makes no handshake (Windows), a sleep is answered by '
+        'reading the settings, as before', () async {
+      rig.tunnel
+        ..oneAtATime = false
+        ..nudgeHandshakes = false;
+      await rig.controller.connect();
+      await rig.controller.checkHealthNow();
+      rig.clock.advance(const Duration(minutes: 14));
+      rig.tunnel.log.clear();
+
+      await rig.controller.checkHealthNow();
+      await settle();
+
+      expect(rig.tunnel.log, isEmpty, reason: 'no nudge, no new tunnel');
+      expect(rig.logs, contains('health: the tunnel answered after all'));
+    });
+
+    test('a nudge after a sleep that gets no answer leaves the repair to the '
+        'look that follows', () async {
+      await rig.controller.connect();
+      await rig.controller.checkHealthNow();
+      rig.clock.advance(const Duration(minutes: 14));
+      rig.tunnel.rebindError = StateError('the library is gone');
+
+      await rig.controller.checkHealthNow();
+      await settle();
+
+      expect(
+        rig.logs,
+        contains(startsWith('wake: the tunnel could not be nudged')),
+      );
+      expect(
+        rig.logs,
+        contains('health: the tunnel answered after all'),
+        reason: 'reading the settings still woke the tunnel',
+      );
+    });
+
+    test('a change of network calls off a look at the settings that left on '
+        'the old path, and is answered at once', () async {
+      await rig.controller.connect();
+      rig.clock.advance(const Duration(minutes: 1));
+      final gate = rig.gist.fetchGate = Completer<void>();
+      final poll = rig.controller.pollNow();
+      await pumpUntil(() => rig.gist.fetchWaiting, 'the look at the settings');
+
+      net.add(true);
+      await settle();
+
+      expect(
+        rebinds(),
+        1,
+        reason:
+            'the repair did not wait for the read to fail (6-32 s on the '
+            'user\'s phone)',
+      );
+      expect(
+        rig.logs,
+        contains(
+          'network: calling off the look at the settings, it left on the old path',
+        ),
+      );
+      expect(
+        rig.logs.any((l) => l.contains('answered on the new path')),
+        isTrue,
+      );
+      gate.complete();
+      await poll;
+    });
+
+    test('a move to a new server that has begun is not called off by a change '
+        'of network', () async {
+      await rig.controller.connect();
+      final waw = rig.fleet.add('198.51.100.7:51820', 31, region: 'waw');
+      await rig.publish(waw);
+      rig.tunnel.installGate = Completer<void>();
+      final poll = rig.controller.pollNow();
+      await pumpUntil(() => rig.tunnel.installWaiting, 'the new tunnel');
+
+      net.add(true);
+      await Future<void>.delayed(Duration.zero);
+      rig.tunnel.installGate!.complete();
+      rig.tunnel.installGate = null;
+      await poll;
+      await settle();
+
+      expect(rig.status.region, 'waw');
+      expect(rig.logs, isNot(contains(startsWith('network: calling off'))));
+    });
 
     test('a tunnel that really stalled is repaired once, even when two looks '
         'come in a row, and a nudge onto a new port is enough', () async {

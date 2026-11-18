@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -335,6 +336,13 @@ func TestAWrongServerKeyNeverHandshakes(t *testing.T) {
 // brings one up.
 func pairOnLoopback(t *testing.T) (*Tunnel, *netstack.Net) {
 	t.Helper()
+	return pairVia(t, func(port int) string { return fmt.Sprintf("127.0.0.1:%d", port) })
+}
+
+// pairVia is pairOnLoopback with the client pointed at endpoint(serverPort)
+// instead of the server itself: a relay in between, for instance.
+func pairVia(t *testing.T, endpoint func(serverPort int) string) (*Tunnel, *netstack.Net) {
+	t.Helper()
 	serverKP, _ := awg.GenerateKeypair()
 	clientKP, _ := awg.GenerateKeypair()
 	params, err := awg.GenerateParams()
@@ -377,7 +385,7 @@ func pairOnLoopback(t *testing.T) (*Tunnel, *netstack.Net) {
 	settings, err := ParseConf(awg.ClientConfig{
 		PrivateKey: clientKP.Private, Address: "10.8.0.7/32", DNS: []string{"10.8.0.1"},
 		Params: params, ServerPublicKey: serverKP.Public,
-		Endpoint: fmt.Sprintf("127.0.0.1:%d", port), AllowedIPs: []string{"10.8.0.0/24"}, Keepalive: 25,
+		Endpoint: endpoint(port), AllowedIPs: []string{"10.8.0.0/24"}, Keepalive: 25,
 	}.Render())
 	if err != nil {
 		t.Fatal(err)
@@ -448,6 +456,98 @@ func TestRebindMovesToANewPortAndHandshakesAtOnce(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	pingThroughTheTunnel(t, clientNet)
+}
+
+// On a network that has just come up the first handshake can get lost; the
+// library on its own tries again only after five seconds, and on the user's phone
+// every change to mobile data took five and a half (2026-11-18 logs). Rebind
+// sends it again a second later.
+func TestRebindTriesAgainSoonWhenItsHandshakeIsLost(t *testing.T) {
+	var relay *lossyRelay
+	tunnel, clientNet := pairVia(t, func(serverPort int) string {
+		relay = startRelay(t, serverPort)
+		return relay.pc.LocalAddr().String()
+	})
+	pingThroughTheTunnel(t, clientNet)
+	first, ok := tunnel.LatestHandshake()
+	if !ok {
+		t.Fatal("no handshake to start from")
+	}
+	time.Sleep(1100 * time.Millisecond) // into the next whole second
+
+	relay.dropFromClient(600 * time.Millisecond) // the handshake Rebind sends
+	start := time.Now()
+	if err := tunnel.Rebind(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := start.Add(3 * time.Second)
+	for {
+		if again, ok := tunnel.LatestHandshake(); ok && again.After(first) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no answer within 3 s of a lost handshake (the library alone waits 5)")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if took := time.Since(start); took < 900*time.Millisecond {
+		t.Errorf("answered after %v: the relay let the first handshake through, so this proved nothing", took)
+	}
+	pingThroughTheTunnel(t, clientNet)
+}
+
+// lossyRelay passes UDP between a client and a server on loopback, and can drop
+// what the client sends for a while.
+type lossyRelay struct {
+	pc         net.PacketConn
+	serverPort int
+
+	mu        sync.Mutex
+	client    net.Addr
+	dropUntil time.Time
+}
+
+func startRelay(t *testing.T, serverPort int) *lossyRelay {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { pc.Close() })
+	r := &lossyRelay{pc: pc, serverPort: serverPort}
+	go r.run()
+	return r
+}
+
+func (r *lossyRelay) dropFromClient(d time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.dropUntil = time.Now().Add(d)
+}
+
+func (r *lossyRelay) run() {
+	server := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: r.serverPort}
+	buf := make([]byte, 65535)
+	for {
+		n, from, err := r.pc.ReadFrom(buf)
+		if err != nil {
+			return
+		}
+		var to net.Addr
+		r.mu.Lock()
+		if u, ok := from.(*net.UDPAddr); ok && u.Port == r.serverPort {
+			to = r.client
+		} else {
+			r.client = from // a new port after Rebind is followed
+			if !time.Now().Before(r.dropUntil) {
+				to = server
+			}
+		}
+		r.mu.Unlock()
+		if to != nil {
+			_, _ = r.pc.WriteTo(buf[:n], to)
+		}
+	}
 }
 
 func listenPort(t *testing.T, tunnel *Tunnel) int {
