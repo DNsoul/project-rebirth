@@ -173,6 +173,9 @@ class ConnectionController implements ConnectionView, ReleaseSource {
        _sleep = sleep ?? ((Duration d) => Future<void>.delayed(d)),
        _log = log ?? ((_) {}) {
     _networkSub = networkChanges?.listen(_networkChanged);
+    _appsSub = tunnel.interfaceOutdated.listen(
+      (_) => unawaited(_reopenInterface()),
+    );
   }
 
   final Bootstrap bootstrap;
@@ -225,6 +228,7 @@ class ConnectionController implements ConnectionView, ReleaseSource {
   DateTime? _retryNewServerAfter;
   Future<void> _lock = Future<void>.value();
   StreamSubscription<bool>? _networkSub;
+  StreamSubscription<void>? _appsSub;
   DateTime? _lastHeal;
   bool _networkRunning = false;
   bool _networkAgain = false;
@@ -548,6 +552,8 @@ class ConnectionController implements ConnectionView, ReleaseSource {
     _stopTimers();
     await _networkSub?.cancel();
     _networkSub = null;
+    await _appsSub?.cancel();
+    _appsSub = null;
     _updateTimer?.cancel();
     _updateTimer = null;
     await _exclusive('dispose', () async {
@@ -992,20 +998,67 @@ class ConnectionController implements ConnectionView, ReleaseSource {
       return;
     }
     try {
-      final identity = await _identity();
-      await _install(
-        active.slot,
-        renderClientConf(
-          body: active.body,
-          privateKey: identity.privateKey,
-          address: active.address,
-        ),
-      );
+      await _install(active.slot, await _confOf(active));
       _log('${active.slot} has the interface again');
     } on Object catch (e) {
       _log('could not give ${active.slot} the interface again: $e');
     }
   }
+
+  /// The configuration [active] was made from.
+  Future<String> _confOf(_Active active) async {
+    final identity = await _identity();
+    return renderClientConf(
+      body: active.body,
+      privateKey: identity.privateKey,
+      address: active.address,
+    );
+  }
+
+  // -------------------------------------------------------------------- apps
+
+  /// The interface leaves out apps that are no longer the right ones: on
+  /// Android a Russian app was installed, and until the interface is opened
+  /// again it goes through the tunnel like any other. The tunnel is made again
+  /// the way it was made, on the same server; the connection drops for the
+  /// second its handshake takes. Asked again inside the queue, so a burst of
+  /// installs, or one that a move already took in, opens nothing twice.
+  Future<void> _reopenInterface() => _exclusive('apps', () async {
+    final active = _active;
+    if (_stopping ||
+        active == null ||
+        _status.phase != Phase.connected ||
+        _interfaceSlot != active.slot ||
+        !await tunnel.isInterfaceOutdated()) {
+      return;
+    }
+    final token = _token;
+    final since = _now();
+    _log('apps: the apps past the tunnel changed, opening the interface again');
+    try {
+      await _install(active.slot, await _confOf(active));
+    } on Object catch (e) {
+      // The old tunnel went with the old interface. The health check finds
+      // no handshake and brings the connection back.
+      _log('apps: could not open the interface again: $e');
+      _setContact(lost: true, recovering: true);
+      return;
+    }
+    try {
+      _log(
+        await _waitHandshakeAfter(
+              active.slot,
+              since,
+              networkAnswerWithin,
+              token,
+            )
+            ? 'apps: the server answered'
+            : 'apps: no answer in ${networkAnswerWithin.inSeconds} s',
+      );
+    } on Cancelled {
+      _log('apps: cancelled');
+    }
+  });
 
   /// Installs a tunnel, keeping track of which one the interface leads into.
   Future<void> _install(String slot, String conf) async {

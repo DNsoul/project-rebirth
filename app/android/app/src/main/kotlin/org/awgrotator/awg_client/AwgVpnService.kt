@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
@@ -109,6 +110,8 @@ class AwgVpnService : VpnService() {
     /**
      * Opens an interface with the given addresses, routes and name servers and
      * returns its descriptor, detached: the caller owns it and must close it.
+     * The apps in [excluded] are left out: they reach the internet the way they
+     * would with no VPN.
      */
     fun establishTun(
         session: String,
@@ -116,6 +119,7 @@ class AwgVpnService : VpnService() {
         routes: List<String>,
         dns: List<String>,
         mtu: Int,
+        excluded: List<String> = emptyList(),
     ): Int {
         val builder = Builder().setSession(session).setMtu(mtu)
         for (a in addresses) {
@@ -127,6 +131,7 @@ class AwgVpnService : VpnService() {
             builder.addRoute(ip, len)
         }
         for (d in dns) builder.addDnsServer(d)
+        val left = leaveOut(builder, excluded)
 
         val pfd = builder.establish()
             ?: throw IllegalStateException("the system refused to open the VPN interface (is the permission still granted?)")
@@ -137,9 +142,36 @@ class AwgVpnService : VpnService() {
         setUnderlyingNetworks(null)
         NativeLog.i(
             "VPN interface opened: ${addresses.size} address(es), ${routes.size} route(s), " +
-                "${dns.size} name server(s), mtu $mtu",
+                "${dns.size} name server(s), mtu $mtu, $left app(s) left out",
         )
         return pfd.detachFd()
+    }
+
+    /**
+     * Leaves the apps out of the interface and says how many were. With "block
+     * connections without VPN" on, Android cuts an app left out off the network
+     * altogether: a bank would stop working instead of going past the tunnel, so
+     * then every app stays inside, as before.
+     */
+    private fun leaveOut(builder: Builder, excluded: List<String>): Int {
+        if (excluded.isEmpty()) return 0
+        if (Build.VERSION.SDK_INT >= 29 && isLockdownEnabled) {
+            NativeLog.i(
+                "connections without VPN are blocked in the system settings, " +
+                    "so no app is left out of the VPN",
+            )
+            return 0
+        }
+        var left = 0
+        for (pkg in excluded) {
+            try {
+                builder.addDisallowedApplication(pkg)
+                left++
+            } catch (e: PackageManager.NameNotFoundException) {
+                // Removed since the list was made.
+            }
+        }
+        return left
     }
 
     companion object {

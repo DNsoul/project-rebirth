@@ -1,5 +1,7 @@
 import 'package:flutter/services.dart';
 
+import 'ru_apps.dart';
+
 /// What only Android can do for the app: ask for the VPN permission, open the
 /// system's VPN interface, keep sockets out of it, say which device this is. The
 /// Kotlin side is MainActivity and AwgVpnService.
@@ -9,14 +11,21 @@ abstract class VpnBridge {
   Future<bool> prepare();
 
   /// Opens the system's VPN interface and returns its file descriptor, which the
-  /// caller owns. Replaces the interface that was open, if any.
+  /// caller owns. Replaces the interface that was open, if any. The apps named in
+  /// [excluded] are left out of it: their traffic goes past the tunnel.
   Future<int> establish({
     required String session,
     required List<String> addresses,
     required List<String> routes,
     required List<String> dns,
     required int mtu,
+    List<String> excluded = const [],
   });
+
+  /// The apps installed on the phone that have something to start from the
+  /// home screen, with the store each came from. The app itself is not among
+  /// them.
+  Future<List<InstalledApp>> installedApps();
 
   /// Keeps the socket with this descriptor out of the VPN. A socket that is not
   /// kept out would send its packets into the tunnel they are meant to carry.
@@ -64,6 +73,9 @@ abstract class VpnBridge {
   /// no usable network left at all. Only real changes are reported, not every
   /// flicker of the signal.
   void Function(bool available)? onNetworkChanged;
+
+  /// Called when an app has been installed or removed.
+  void Function()? onAppsChanged;
 }
 
 /// The real bridge, over a method channel.
@@ -77,6 +89,8 @@ class MethodChannelVpnBridge implements VpnBridge {
         final args = call.arguments;
         final available = args is Map ? args['available'] != false : true;
         onNetworkChanged?.call(available);
+      } else if (call.method == 'appsChanged') {
+        onAppsChanged?.call();
       }
       return null;
     });
@@ -93,6 +107,9 @@ class MethodChannelVpnBridge implements VpnBridge {
   void Function(bool available)? onNetworkChanged;
 
   @override
+  void Function()? onAppsChanged;
+
+  @override
   Future<bool> prepare() async =>
       await _channel.invokeMethod<bool>('prepare') ?? false;
 
@@ -103,6 +120,7 @@ class MethodChannelVpnBridge implements VpnBridge {
     required List<String> routes,
     required List<String> dns,
     required int mtu,
+    List<String> excluded = const [],
   }) async {
     final fd = await _channel.invokeMethod<int>('establish', {
       'session': session,
@@ -110,11 +128,27 @@ class MethodChannelVpnBridge implements VpnBridge {
       'routes': routes,
       'dns': dns,
       'mtu': mtu,
+      'excluded': excluded,
     });
     if (fd == null) {
       throw PlatformException(code: 'establish', message: 'no descriptor');
     }
     return fd;
+  }
+
+  @override
+  Future<List<InstalledApp>> installedApps() async {
+    final raw = await _channel.invokeListMethod<Object?>('installedApps') ?? [];
+    return [
+      for (final e in raw)
+        if (e is Map && e['package'] is String)
+          InstalledApp(
+            e['package'] as String,
+            installer: e['installer'] is String
+                ? e['installer'] as String
+                : null,
+          ),
+    ];
   }
 
   @override

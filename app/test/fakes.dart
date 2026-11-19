@@ -449,6 +449,23 @@ class FakeTunnel implements TunnelDriver {
   @override
   bool get rebindMakesHandshake => nudgeHandshakes;
 
+  /// Like Android when an app is installed: the interface was opened for a set
+  /// of apps let past it that is no longer right. Cleared by an install.
+  bool outdated = false;
+  final _outdated = StreamController<void>.broadcast(sync: true);
+
+  /// The phone says an app was installed that changes what goes past the tunnel.
+  void appInstalled() {
+    outdated = true;
+    _outdated.add(null);
+  }
+
+  @override
+  Stream<void> get interfaceOutdated => _outdated.stream;
+
+  @override
+  Future<bool> isInterfaceOutdated() async => outdated;
+
   final Map<String, DateTime> _handshakeAt = {};
 
   bool _knownTo(String name) {
@@ -500,6 +517,7 @@ class FakeTunnel implements TunnelDriver {
       installWaiting = false;
     }
     log.add('install $name');
+    outdated = false;
     final t = _Installed(conf);
     _installed[name] = t;
     final pair = await tunnelKeyPairFromPrivate(decodeStd(t.privateKey, 32));

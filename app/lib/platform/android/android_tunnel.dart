@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import '../../core/platform.dart';
 import 'awg_native.dart';
 import 'conf_plan.dart';
+import 'ru_apps.dart';
 import 'vpn_bridge.dart';
 
 /// Brings tunnels up on Android: the system opens a VPN interface for the app,
@@ -11,13 +14,20 @@ import 'vpn_bridge.dart';
 /// replaces the old, so a move from one server to the next costs a short gap
 /// instead of overlapping the two, and the old tunnel is cleaned up afterwards
 /// the way it is on Windows.
+///
+/// Russian apps are left out of the interface (see ru_apps.dart). Which ones is
+/// settled when an interface is opened, so an app installed later is let past
+/// the tunnel once the interface is opened again: [interfaceOutdated] asks for
+/// that.
 class AndroidTunnelDriver implements TunnelDriver {
   AndroidTunnelDriver({
     required this.native,
     required this.bridge,
     this.log,
     this.session = 'Rebirth',
-  });
+  }) {
+    bridge.onAppsChanged = () => unawaited(_appsChanged());
+  }
 
   final AwgNative native;
   final VpnBridge bridge;
@@ -30,6 +40,48 @@ class AndroidTunnelDriver implements TunnelDriver {
   final Map<String, int> _handles = {};
 
   static final _validName = RegExp(r'^awgr-[a-z0-9-]{1,24}$');
+
+  /// The apps to let past the tunnel, worked out once and again after an app is
+  /// installed or removed; null until then.
+  List<String>? _past;
+
+  /// The apps the open interface leaves out, or null when none is open.
+  List<String>? _openedWith;
+
+  final _outdated = StreamController<void>.broadcast();
+
+  /// The apps to let past the tunnel, or null when the phone would not say
+  /// what is installed.
+  Future<List<String>?> _appsPastTunnel() async {
+    final known = _past;
+    if (known != null) return known;
+    try {
+      final picked = appsPastTunnel(await bridge.installedApps());
+      log?.call('apps past the tunnel: ${picked.describe()}');
+      return _past = picked.packages;
+    } on Object catch (e) {
+      log?.call('could not list the installed apps: $e');
+      return null;
+    }
+  }
+
+  Future<void> _appsChanged() async {
+    _past = null;
+    if (await isInterfaceOutdated()) _outdated.add(null);
+  }
+
+  @override
+  Stream<void> get interfaceOutdated => _outdated.stream;
+
+  /// Only a list that could be made and differs counts: a phone that would not
+  /// say what is installed is no reason to let every app back in.
+  @override
+  Future<bool> isInterfaceOutdated() async {
+    final opened = _openedWith;
+    if (opened == null || _handles.isEmpty) return false;
+    final now = await _appsPastTunnel();
+    return now != null && !sameApps(now, opened);
+  }
 
   @override
   Future<String?> preflight() async {
@@ -85,6 +137,7 @@ class AndroidTunnelDriver implements TunnelDriver {
       }
     }
 
+    final past = await _appsPastTunnel() ?? const <String>[];
     final int fd;
     try {
       fd = await bridge.establish(
@@ -93,7 +146,9 @@ class AndroidTunnelDriver implements TunnelDriver {
         routes: plan.routes,
         dns: plan.dns,
         mtu: plan.mtu,
+        excluded: past,
       );
+      _openedWith = past;
     } on Object catch (e) {
       if (_handles.isEmpty) await bridge.release();
       throw TunnelException(
@@ -134,6 +189,7 @@ class AndroidTunnelDriver implements TunnelDriver {
     native.turnOff(handle);
     if (_handles.isEmpty) {
       await bridge.release();
+      _openedWith = null;
     }
     log?.call('tunnel $name is down');
   }

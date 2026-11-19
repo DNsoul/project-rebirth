@@ -201,6 +201,13 @@ class WindowsTunnelDriver implements TunnelDriver {
   @override
   bool get rebindMakesHandshake => false;
 
+  /// Every app goes the same way on Windows.
+  @override
+  Stream<void> get interfaceOutdated => const Stream.empty();
+
+  @override
+  Future<bool> isInterfaceOutdated() async => false;
+
   /// Every tunnel has its own adapter: a new one leaves the old one working.
   @override
   bool get oneAtATime => false;

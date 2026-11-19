@@ -63,6 +63,15 @@ abstract class TunnelDriver {
   /// Windows, where [rebind] does nothing and the tunnel service is left to it.
   bool get rebindMakesHandshake;
 
+  /// Fires when the interface the tunnel runs on was opened for a set of apps
+  /// let past it that is no longer right: on Android, an app was installed or
+  /// removed. Never on Windows, where every app goes the same way.
+  Stream<void> get interfaceOutdated;
+
+  /// Whether the interface should be opened again. Asked right before doing it,
+  /// so that a change a newer interface already took in costs nothing.
+  Future<bool> isInterfaceOutdated();
+
   /// What can be told about why the tunnel [name] carries nothing, in words for
   /// the journal: what it has received and sent, and, where the system can say,
   /// which way it sends traffic for [address]. Empty when nothing can be told.

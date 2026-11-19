@@ -6,6 +6,7 @@ import 'package:awg_client/platform/android/android_system.dart';
 import 'package:awg_client/platform/android/android_tunnel.dart';
 import 'package:awg_client/platform/android/awg_native.dart';
 import 'package:awg_client/platform/android/conf_plan.dart';
+import 'package:awg_client/platform/android/ru_apps.dart';
 import 'package:awg_client/platform/android/vpn_bridge.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -113,6 +114,27 @@ class FakeBridge implements VpnBridge {
   void Function(bool available)? onNetworkChanged;
 
   @override
+  void Function()? onAppsChanged;
+
+  /// What is installed on the phone, and what goes wrong listing it.
+  final apps = <InstalledApp>[];
+  Object? appsError;
+
+  @override
+  Future<List<InstalledApp>> installedApps() async {
+    calls.add('installedApps');
+    final e = appsError;
+    if (e != null) throw e;
+    return List.of(apps);
+  }
+
+  /// The phone installs [app] and says so.
+  void install(InstalledApp app) {
+    apps.add(app);
+    onAppsChanged?.call();
+  }
+
+  @override
   Future<bool> prepare() async {
     calls.add('prepare');
     final e = prepareError;
@@ -127,6 +149,7 @@ class FakeBridge implements VpnBridge {
     required List<String> routes,
     required List<String> dns,
     required int mtu,
+    List<String> excluded = const [],
   }) async {
     calls.add('establish');
     final e = establishError;
@@ -137,6 +160,7 @@ class FakeBridge implements VpnBridge {
       'routes': routes,
       'dns': dns,
       'mtu': mtu,
+      'excluded': excluded,
     });
     return nextFd++;
   }
@@ -333,6 +357,7 @@ void main() {
           'routes': ['198.18.0.0/15', '91.108.4.0/22'],
           'dns': ['198.18.0.1'],
           'mtu': 1280,
+          'excluded': <String>[],
         });
         expect(native.fds, [
           40,
@@ -622,6 +647,133 @@ void main() {
     });
   });
 
+  group('Russian apps go past the tunnel', () {
+    late FakeNative native;
+    late FakeBridge bridge;
+    late AndroidTunnelDriver driver;
+    late List<String> log;
+    late List<void> outdated;
+
+    Future<void> settle() async {
+      for (var i = 0; i < 20; i++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+    }
+
+    List<String> excludedAt(int i) =>
+        bridge.established[i]['excluded']! as List<String>;
+
+    setUp(() {
+      native = FakeNative();
+      bridge = FakeBridge()
+        ..apps.addAll(const [
+          InstalledApp('ru.sberbankmobile', installer: 'ru.vk.store'),
+          InstalledApp('org.telegram.messenger', installer: 'ru.vk.store'),
+          InstalledApp('com.google.android.youtube'),
+          InstalledApp('com.idamob.tinkoff.android'),
+        ]);
+      log = [];
+      outdated = [];
+      driver = AndroidTunnelDriver(
+        native: native,
+        bridge: bridge,
+        log: log.add,
+      );
+      driver.interfaceOutdated.listen(outdated.add);
+    });
+
+    test('the interface is opened without them, and the journal counts them '
+        'without naming any', () async {
+      await driver.install(name: 'awgr-a', conf: mainConf);
+
+      expect(excludedAt(0), [
+        'com.idamob.tinkoff.android',
+        'ru.sberbankmobile',
+      ]);
+      final line = log.singleWhere((l) => l.startsWith('apps past the tunnel'));
+      expect(
+        line,
+        'apps past the tunnel: 2 (by name 2, from a Russian store 0)',
+      );
+    });
+
+    test('the phone is asked what is installed once, not at every '
+        'opening', () async {
+      await driver.install(name: 'awgr-a', conf: mainConf);
+      await driver.install(name: 'awgr-b', conf: mainConf);
+      await driver.install(name: 'awgr-a', conf: mainConf);
+
+      expect(bridge.calls.where((c) => c == 'installedApps'), hasLength(1));
+      expect(excludedAt(2), excludedAt(0));
+    });
+
+    test('a Russian app installed later makes the open interface out of date, '
+        'and the next one leaves it out too', () async {
+      await driver.install(name: 'awgr-a', conf: mainConf);
+
+      bridge.install(
+        const InstalledApp('com.example.game', installer: 'ru.vk.store'),
+      );
+      await settle();
+
+      expect(outdated, hasLength(1));
+      expect(await driver.isInterfaceOutdated(), isTrue);
+
+      await driver.install(name: 'awgr-a', conf: mainConf);
+      expect(excludedAt(1), contains('com.example.game'));
+      expect(await driver.isInterfaceOutdated(), isFalse);
+    });
+
+    test('an app that changes nothing says nothing', () async {
+      await driver.install(name: 'awgr-a', conf: mainConf);
+
+      bridge.install(const InstalledApp('com.example.notes'));
+      await settle();
+
+      expect(outdated, isEmpty);
+      expect(await driver.isInterfaceOutdated(), isFalse);
+    });
+
+    test('with no tunnel up an install says nothing: the next one takes the '
+        'apps as they are', () async {
+      bridge.install(const InstalledApp('ru.ozon.app.android'));
+      await settle();
+      expect(outdated, isEmpty);
+
+      await driver.install(name: 'awgr-a', conf: mainConf);
+      await driver.uninstall('awgr-a');
+      bridge.install(const InstalledApp('ru.mts.mymts'));
+      await settle();
+      expect(outdated, isEmpty);
+    });
+
+    test('a phone that will not say what is installed: every app stays '
+        'inside, and it does not count as a change', () async {
+      bridge.appsError = PlatformException(code: 'installedApps');
+      await driver.install(name: 'awgr-a', conf: mainConf);
+
+      expect(excludedAt(0), isEmpty);
+      expect(await driver.installed(), ['awgr-a']);
+      expect(log, contains(startsWith('could not list the installed apps')));
+
+      bridge.install(const InstalledApp('ru.ozon.app.android'));
+      await settle();
+      expect(outdated, isEmpty);
+    });
+
+    test('a phone that stops saying what is installed does not let every '
+        'app back in', () async {
+      await driver.install(name: 'awgr-a', conf: mainConf);
+      bridge.appsError = PlatformException(code: 'installedApps');
+
+      bridge.install(const InstalledApp('ru.ozon.app.android'));
+      await settle();
+
+      expect(outdated, isEmpty);
+      expect(await driver.isInterfaceOutdated(), isFalse);
+    });
+  });
+
   group('the rest of the system', () {
     test(
       'the name server is part of the interface: there is nothing to enable',
@@ -654,6 +806,12 @@ void main() {
         switch (call.method) {
           case 'establish':
             return 77;
+          case 'installedApps':
+            return [
+              {'package': 'ru.sberbankmobile', 'installer': 'ru.vk.store'},
+              {'package': 'com.example.notes', 'installer': null},
+              {'installer': 'ru.vk.store'},
+            ];
           case 'prepare':
             return true;
           case 'androidId':
@@ -682,6 +840,7 @@ void main() {
           routes: ['198.18.0.0/15'],
           dns: ['198.18.0.1'],
           mtu: 1280,
+          excluded: ['ru.sberbankmobile'],
         );
         expect(fd, 77);
         expect(calls.single.method, 'establish');
@@ -691,9 +850,31 @@ void main() {
           'routes': ['198.18.0.0/15'],
           'dns': ['198.18.0.1'],
           'mtu': 1280,
+          'excluded': ['ru.sberbankmobile'],
         });
       },
     );
+
+    test('reads the installed apps and the store of each, skipping what '
+        'it cannot make out', () async {
+      final apps = await MethodChannelVpnBridge().installedApps();
+      expect(apps.map((a) => '${a.package} ${a.installer}'), [
+        'ru.sberbankmobile ru.vk.store',
+        'com.example.notes null',
+      ]);
+    });
+
+    test('passes on word that an app was installed or removed', () async {
+      final bridge = MethodChannelVpnBridge();
+      var heard = 0;
+      bridge.onAppsChanged = () => heard++;
+      await binding.defaultBinaryMessenger.handlePlatformMessage(
+        channel.name,
+        channel.codec.encodeMethodCall(const MethodCall('appsChanged')),
+        (_) {},
+      );
+      expect(heard, 1);
+    });
 
     test(
       'asks for the permission, the device id and protection by the same names',

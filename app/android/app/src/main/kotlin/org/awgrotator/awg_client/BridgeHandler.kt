@@ -38,6 +38,7 @@ class BridgeHandler(
         AwgVpnService.onNetworkChanged = { available ->
             ui.post { channel.invokeMethod("networkChanged", mapOf("available" to available)) }
         }
+        InstalledApps.watch(app) { ui.post { channel.invokeMethod("appsChanged", null) } }
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -53,17 +54,30 @@ class BridgeHandler(
                 val routes = call.argument<List<String>>("routes") ?: emptyList()
                 val dns = call.argument<List<String>>("dns") ?: emptyList()
                 val mtu = call.argument<Int>("mtu") ?: 1280
+                val excluded = call.argument<List<String>>("excluded") ?: emptyList()
                 // Starting the service waits for it, so this is not done on the
                 // thread that draws the screen.
                 worker.execute {
                     try {
                         val fd = AwgVpnService.start(app)
-                            .establishTun(session, addresses, routes, dns, mtu)
+                            .establishTun(session, addresses, routes, dns, mtu, excluded)
                         ui.post { result.success(fd) }
                     } catch (e: Exception) {
                         NativeLog.e("could not open the VPN interface", e)
                         ui.post { result.error("establish", e.message, null) }
                     }
+                }
+            }
+
+            // Asking every app for its store takes a moment on a phone with
+            // hundreds of them.
+            "installedApps" -> worker.execute {
+                try {
+                    val apps = InstalledApps.list(app)
+                    ui.post { result.success(apps) }
+                } catch (e: Exception) {
+                    NativeLog.e("could not list the installed apps", e)
+                    ui.post { result.error("installedApps", e.message, null) }
                 }
             }
 

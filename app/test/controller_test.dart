@@ -1707,6 +1707,57 @@ void main() {
       );
       expect(seen.where((s) => s.recovering || s.lostContact), isEmpty);
     });
+
+    test('a Russian app installed while connected: the interface is opened '
+        'again on the same server, and nothing else is made', () async {
+      await rig.controller.connect();
+      rig.clock.advance(const Duration(minutes: 1));
+      rig.tunnel.log.clear();
+
+      rig.tunnel.appInstalled();
+      await settle();
+
+      expect(rig.tunnel.log, ['install awgr-a']);
+      expect(rig.tunnels, ['awgr-a']);
+      expect(rig.tunnel.interfaceOwner, 'awgr-a');
+      expect(rig.tunnel.carries('awgr-a'), isTrue);
+      expect(rig.status.phase, Phase.connected);
+      expect(rig.status.region, 'sto');
+      expect(rig.logs, contains('apps: the server answered'));
+    });
+
+    test('a burst of installs opens the interface once', () async {
+      await rig.controller.connect();
+      rig.tunnel.log.clear();
+
+      rig.tunnel
+        ..appInstalled()
+        ..appInstalled()
+        ..appInstalled();
+      await settle();
+
+      expect(installs('awgr-a'), 1);
+    });
+
+    test('an app that changes nothing opens nothing', () async {
+      await rig.controller.connect();
+      rig.tunnel.log.clear();
+
+      rig.tunnel.appInstalled();
+      rig.tunnel.outdated = false; // a move took it in first
+      await settle();
+
+      expect(rig.tunnel.log, isEmpty);
+    });
+
+    test('while disconnected an install opens nothing: the next connection '
+        'takes the apps as they are', () async {
+      rig.tunnel.appInstalled();
+      await settle();
+
+      expect(rig.tunnel.log, isEmpty);
+      expect(rig.status.phase, Phase.idle);
+    });
   });
 
   group('when the owner approves devices', () {
