@@ -43,6 +43,9 @@ type Intervals struct {
 
 	// Account is how often the provider is asked about money and traffic.
 	Account time.Duration
+
+	// Heavy is how often the node is asked which devices use the most.
+	Heavy time.Duration
 }
 
 // StatusGrace is how long the node's status may be missing or stale before the
@@ -86,6 +89,9 @@ func (i Intervals) withDefaults() Intervals {
 	}
 	if i.Account == 0 {
 		i.Account = DefaultAccountEvery
+	}
+	if i.Heavy == 0 {
+		i.Heavy = DefaultHeavyEvery
 	}
 	return i
 }
@@ -160,6 +166,7 @@ type Manager struct {
 	account        *cloud.Account
 	accountAt      time.Time
 	lastAccountTry time.Time
+	lastHeavy      time.Time
 
 	pending   *MoveRequest
 	statusDue bool
@@ -297,6 +304,7 @@ func (m *Manager) Tick(ctx context.Context) error {
 	m.maybeWatch(ctx, now)
 	m.maybeAccount(ctx, now)
 	m.noteAccount(now)
+	m.maybeHeavy(ctx, now)
 	m.maybeStatus(ctx, now)
 	m.maybeHeartbeat(ctx, now)
 	m.maybeReconcile(ctx, now)

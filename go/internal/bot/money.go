@@ -124,6 +124,8 @@ func (b *Bot) eventView(e lifecycle.Event) view {
 			text += " При таком темпе кончится " + out + "."
 		}
 		return view{text: text}
+	case e.Kind == lifecycle.EventHeavy && e.Heavy != nil:
+		return heavyView(*e.Heavy)
 	}
 	return view{text: eventText(e)}
 }

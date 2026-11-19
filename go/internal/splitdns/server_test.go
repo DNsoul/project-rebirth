@@ -760,3 +760,32 @@ func TestSmallestTTL(t *testing.T) {
 		}
 	}
 }
+
+func TestStandInsAreLabelledWithTheSiteOnlyWhenAsked(t *testing.T) {
+	r := newRig(t)
+	r.both("video.example.com", "142.250.1.1")
+	got := answerAddrs(r.ask(t, "video.example.com", dnsmessage.TypeA))
+	if site := r.pool.Site(netip.MustParseAddr(got[0])); site != "" {
+		t.Fatalf("a stand-in was labelled %q without being asked to", site)
+	}
+
+	r.srv.cfg.Site = func(name string) string { return "label:" + name }
+	r.both("cdn.other.org", "142.250.1.1") // the same server: the last name wins
+	got = answerAddrs(r.ask(t, "cdn.other.org", dnsmessage.TypeA))
+	fake := netip.MustParseAddr(got[0])
+	if site := r.pool.Site(fake); site != "label:cdn.other.org" {
+		t.Fatalf("site = %q", site)
+	}
+
+	// The label is saved with the mapping and comes back after a restart.
+	again, err := NewPool(netip.MustParsePrefix("198.18.0.0/15"), netip.MustParseAddr("198.18.0.1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := again.Restore(r.pool.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	if site := again.Site(fake); site != "label:cdn.other.org" {
+		t.Errorf("after a restore: %q", site)
+	}
+}

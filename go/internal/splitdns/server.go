@@ -77,6 +77,11 @@ type Config struct {
 
 	// Now is the clock; tests replace it.
 	Now func() time.Time
+
+	// Site, when set, names the site a tunnelled name belongs to, and each
+	// stand-in handed out is labelled with it so that the traffic through it
+	// can be counted by site. Without it nothing about names is kept.
+	Site func(name string) string
 }
 
 // Stats counts what the server has done. Names are never recorded: the
@@ -211,7 +216,7 @@ func (s *Server) answerA(ctx context.Context, req *dnsmessage.Message, q dnsmess
 		return s.reply(req, dnsmessage.RCodeSuccess, aRecords(q.Name, res.direct, ttl))
 	}
 
-	standIns, err := s.standIns(res.addrs)
+	standIns, err := s.standIns(name, res.addrs)
 	if err != nil {
 		return s.fail(req, name, err)
 	}
@@ -352,9 +357,14 @@ func (s *Server) remember(name string, res *resolution) *resolution {
 
 // standIns returns a stand-in address for each of the real ones, up to the
 // configured limit, installing translations as needed.
-func (s *Server) standIns(real []netip.Addr) ([]netip.Addr, error) {
+func (s *Server) standIns(name string, real []netip.Addr) ([]netip.Addr, error) {
 	s.mapMu.Lock()
 	defer s.mapMu.Unlock()
+
+	site := ""
+	if s.cfg.Site != nil {
+		site = s.cfg.Site(name)
+	}
 
 	limit := min(len(real), s.cfg.MaxStandIns)
 	out := make([]netip.Addr, 0, limit)
@@ -377,6 +387,9 @@ func (s *Server) standIns(real []netip.Addr) ([]netip.Addr, error) {
 				s.cfg.Pool.Release(as.Fake)
 				return nil, fmt.Errorf("install translation: %w", err)
 			}
+		}
+		if site != "" {
+			s.cfg.Pool.Label(as.Fake, site)
 		}
 		out = append(out, as.Fake)
 	}

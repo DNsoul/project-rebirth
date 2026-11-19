@@ -14,6 +14,7 @@ import (
 	"awgrotator/internal/awg"
 	"awgrotator/internal/enroll"
 	"awgrotator/internal/proto"
+	"awgrotator/internal/usage"
 )
 
 // The control socket is how the manager on the same machine carries out the
@@ -38,13 +39,15 @@ const (
 	OpAllow    = "allow"
 	OpForget   = "forget"
 	OpNotified = "notified"
+	OpUsage    = "usage" // where the traffic went over Period, for ID or for everyone
 )
 
 // ControlRequest is one question or decision. ID is a device id (base64url).
 type ControlRequest struct {
-	Op  string   `json:"op"`
-	ID  string   `json:"id,omitempty"`
-	IDs []string `json:"ids,omitempty"`
+	Op     string   `json:"op"`
+	ID     string   `json:"id,omitempty"`
+	IDs    []string `json:"ids,omitempty"`
+	Period string   `json:"period,omitempty"` // OpUsage: usage.Day, Week or Month
 }
 
 // ControlResponse is the answer. Error is set when the operation did not
@@ -58,6 +61,20 @@ type ControlResponse struct {
 	Missing  bool             `json:"missing,omitempty"`
 	Overview *ControlOverview `json:"overview,omitempty"`
 	Name     string           `json:"name,omitempty"` // the device acted on
+	Usage    *UsageView       `json:"usage,omitempty"`
+}
+
+// UsageView is a traffic report with the devices' names and codes, by id.
+// A device that has since been removed has no entry.
+type UsageView struct {
+	usage.Report
+	Names map[string]DeviceLabel `json:"names"`
+}
+
+// DeviceLabel is how the operator knows a device.
+type DeviceLabel struct {
+	Name string `json:"name"`
+	Code string `json:"code"`
 }
 
 // ControlOverview is the device list as the operator sees it: each entry with
@@ -98,6 +115,9 @@ type Controller struct {
 
 	// Peers reads what the tunnel knows about its peers right now.
 	Peers func() ([]PeerStatus, error)
+
+	// Usage is the traffic history; nil when traffic is not counted.
+	Usage *usage.Store
 
 	Now func() time.Time
 	Log *slog.Logger
@@ -140,8 +160,25 @@ func (c *Controller) Handle(req ControlRequest) ControlResponse {
 		return answer("", c.Srv.Forget(req.ID))
 	case OpNotified:
 		return answer("", c.Srv.MarkNotified(req.IDs))
+	case OpUsage:
+		return c.usage(req, now)
 	}
 	return ControlResponse{Error: fmt.Sprintf("unknown operation %q", req.Op)}
+}
+
+func (c *Controller) usage(req ControlRequest, now time.Time) ControlResponse {
+	if c.Usage == nil {
+		return ControlResponse{Error: "traffic is not counted on this server"}
+	}
+	r, err := c.Usage.Report(req.Period, req.ID, now)
+	if err != nil {
+		return ControlResponse{Error: err.Error()}
+	}
+	names := map[string]DeviceLabel{}
+	for _, d := range c.Srv.Overview(now).Devices {
+		names[d.ID] = DeviceLabel{Name: d.Name, Code: codeOf(d.PublicKey)}
+	}
+	return ControlResponse{OK: true, Usage: &UsageView{Report: r, Names: names}}
 }
 
 func answer(name string, err error) ControlResponse {

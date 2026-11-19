@@ -29,6 +29,7 @@ import (
 	"awgrotator/internal/lifecycle"
 	"awgrotator/internal/node"
 	"awgrotator/internal/telegram"
+	"awgrotator/internal/usage"
 )
 
 // API is the part of the Bot API used here.
@@ -296,6 +297,7 @@ func (b *Bot) handle(ctx context.Context, u telegram.Update) {
 var menuCommands = []telegram.Command{
 	{Command: "status", Description: "Состояние сервера"},
 	{Command: "devices", Description: "Устройства с доступом"},
+	{Command: "traffic", Description: "Куда уходит трафик"},
 	{Command: "requests", Description: "Заявки и отказы"},
 	{Command: "service", Description: "Обслуживание: переезд, перезапуск, автопереезды"},
 }
@@ -310,6 +312,8 @@ func (b *Bot) command(ctx context.Context, chat int64, text string) {
 		out = b.statusView(ctx)
 	case "/devices":
 		out = b.devicesView(ctx)
+	case "/traffic":
+		out = b.trafficView(ctx, usage.Day)
 	case "/requests":
 		out = b.requestsView(ctx)
 	case "/service":
@@ -389,6 +393,12 @@ func (b *Bot) press(ctx context.Context, q *telegram.CallbackQuery) {
 		} else {
 			edit(b.devicesOrRequests(ctx, op, text))
 		}
+
+	case "tr":
+		edit(b.trafficView(ctx, periodOf(arg)))
+	case "td":
+		p, id, _ := strings.Cut(arg, ":")
+		edit(b.deviceTrafficView(ctx, periodOf(p), id))
 
 	case "rv":
 		edit(b.confirmRevoke(ctx, arg))

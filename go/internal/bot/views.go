@@ -29,7 +29,8 @@ func menuView() view {
 		text: "Rebirth: управление сервером.",
 		kb: telegram.Keyboard{
 			{btn("Состояние", "m:status"), btn("Устройства", "m:devices")},
-			{btn("Заявки", "m:requests"), btn("Обслуживание", "m:service")},
+			{btn("Трафик", "tr:d"), btn("Заявки", "m:requests")},
+			{btn("Обслуживание", "m:service")},
 		},
 	}
 }

@@ -21,6 +21,11 @@ type Entry struct {
 	Fake     netip.Addr `json:"fake"`
 	Real     netip.Addr `json:"real"`
 	LastUsed time.Time  `json:"last_used"`
+
+	// Site is what the stand-in was last handed out for, as the traffic count
+	// names it: a service or a registrable domain, never the full name. Empty
+	// when the server does not count traffic by site.
+	Site string `json:"site,omitempty"`
 }
 
 // Assignment is the result of asking for a stand-in.
@@ -155,6 +160,26 @@ func (p *Pool) Lookup(fake netip.Addr) (netip.Addr, bool) {
 	return e.Real, true
 }
 
+// Label records which site a stand-in was handed out for. Many names can
+// share a real address; the last one asked for wins.
+func (p *Pool) Label(fake netip.Addr, site string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if e, ok := p.byFake[fake]; ok {
+		e.Site = site
+	}
+}
+
+// Site returns the site a stand-in was last handed out for, or "".
+func (p *Pool) Site(fake netip.Addr) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if e, ok := p.byFake[fake]; ok {
+		return e.Site
+	}
+	return ""
+}
+
 // Release drops a mapping. It is used when installing the mapping in the
 // kernel failed: keeping it would hand out a stand-in that goes nowhere.
 func (p *Pool) Release(fake netip.Addr) {
@@ -232,7 +257,7 @@ func (p *Pool) Restore(entries []Entry) error {
 	p.byReal = make(map[netip.Addr]*Entry, len(entries))
 	p.byFake = make(map[netip.Addr]*Entry, len(entries))
 	for _, e := range entries {
-		entry := &Entry{Fake: e.Fake.Unmap(), Real: e.Real.Unmap(), LastUsed: e.LastUsed}
+		entry := &Entry{Fake: e.Fake.Unmap(), Real: e.Real.Unmap(), LastUsed: e.LastUsed, Site: e.Site}
 		p.byReal[entry.Real] = entry
 		p.byFake[entry.Fake] = entry
 	}

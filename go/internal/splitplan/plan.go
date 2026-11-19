@@ -79,11 +79,7 @@ type Logf func(format string, args ...any)
 // TelegramFallback is used when neither the download nor a cached copy is
 // available. It is the list as of this writing; the apps connect to these
 // addresses directly, so a stale list degrades gradually rather than at once.
-var TelegramFallback = []string{
-	"91.105.192.0/23", "91.108.4.0/22", "91.108.8.0/22", "91.108.12.0/22",
-	"91.108.16.0/22", "91.108.20.0/22", "91.108.56.0/22", "149.154.160.0/20",
-	"185.76.151.0/24",
-}
+var TelegramFallback = node.TelegramNets
 
 // DefaultForceTunnel is written when the file does not exist.
 const DefaultForceTunnel = `# Сайты, которые всегда идут через туннель, даже если у них российский адрес.

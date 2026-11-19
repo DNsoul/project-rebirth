@@ -122,6 +122,7 @@ const (
 	EventPayment       EventKind = "payment" // the next payment is near
 	EventPaid          EventKind = "paid"    // the next period has been paid
 	EventQuota         EventKind = "quota"   // a share of the traffic allowance is spent
+	EventHeavy         EventKind = "heavy"   // one device used a lot in a day
 )
 
 // Event is one such thing.
@@ -140,6 +141,9 @@ type Event struct {
 	Account   *cloud.Account
 	Percent   int
 	CreatedAt time.Time
+
+	// Heavy is the device, for EventHeavy.
+	Heavy *HeavyUsage
 }
 
 // ErrBusy is returned when the operator's actions are coming faster than the

@@ -15,6 +15,7 @@ import (
 
 	"awgrotator/internal/ruset"
 	"awgrotator/internal/splitdns"
+	"awgrotator/internal/usage"
 )
 
 const (
@@ -106,6 +107,9 @@ func (n *Node) startSplit(ctx context.Context) error {
 		Primary:   &splitdns.Upstream{Addr: cfg.PrimaryUpstream, ECS: clientSubnet},
 		Secondary: &splitdns.Upstream{Addr: cfg.SecondaryUpstream},
 		Log:       n.log,
+		// Stand-ins are labelled with their site so the traffic through them
+		// can be counted by site; only the site is kept, never the name.
+		Site: usage.SiteOf,
 	})
 	if err != nil {
 		return err

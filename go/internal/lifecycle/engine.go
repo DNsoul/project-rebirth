@@ -22,6 +22,7 @@ import (
 	"awgrotator/internal/node"
 	"awgrotator/internal/splitplan"
 	"awgrotator/internal/tunneltest"
+	"awgrotator/internal/usage"
 )
 
 // Cloud is the part of the cloud provider the engine talks to directly.
@@ -87,6 +88,13 @@ type Host interface {
 	// ReadWatchLog returns the end of the availability log, or nil if there is
 	// none, for a replacement to carry on from.
 	ReadWatchLog() ([]byte, error)
+
+	// ReadUsage returns the node's traffic history, or nil if there is none,
+	// for a replacement to carry on counting from.
+	ReadUsage() ([]byte, error)
+
+	// Usage asks the node where the traffic went over a period.
+	Usage(ctx context.Context, period string) (*node.UsageView, error)
 
 	// ReadBody and WriteBody keep the configuration this server publishes, so
 	// that it can be republished.
@@ -496,6 +504,13 @@ func (e *Engine) successorFiles(s *cloud.Server, place PlaceConfig, body *fleet.
 			What: "журнал доступности", Path: filepath.Join(next.Data(), WatchLogName), Mode: "0600", Content: raw,
 		})
 	}
+	// The traffic history goes with the devices, so the operator's month of
+	// counts does not start again at every move.
+	if raw := e.inheritedUsage(); len(raw) > 0 {
+		files = append(files, deploy.File{
+			What: "учёт трафика", Path: node.DefaultUsagePath, Mode: "0600", Content: raw,
+		})
+	}
 	if devices := e.inheritedDevices(); len(devices) > 0 {
 		files = append(files, deploy.File{
 			What: "список устройств", Path: enroll.DefaultRegistryPath, Mode: "0600", Content: devices,
@@ -507,6 +522,24 @@ func (e *Engine) successorFiles(s *cloud.Server, place PlaceConfig, body *fleet.
 		})
 	}
 	return files, nil
+}
+
+// inheritedUsage is the traffic history, if it reads. One that does not is
+// left behind: counting starts afresh, which costs only the past.
+func (e *Engine) inheritedUsage() []byte {
+	raw, err := e.Host.ReadUsage()
+	if err != nil {
+		e.log().Warn("could not read the traffic history; the new server starts counting afresh", "error", err)
+		return nil
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	if _, err := usage.Parse(raw); err != nil {
+		e.log().Warn("the traffic history does not check out; the new server starts counting afresh", "error", err)
+		return nil
+	}
+	return raw
 }
 
 // inheritedAccess is the waiting list and the refusals, handed on so that a

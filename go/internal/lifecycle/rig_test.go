@@ -298,6 +298,9 @@ type fakeHost struct {
 	access     []byte
 	written    []byte
 	exitWrites []egress.Mode
+	usage      []byte
+	report     *node.UsageView
+	reportErr  error
 }
 
 func (h *fakeHost) NodeRunning(context.Context) (bool, error) { return h.running, nil }
@@ -309,8 +312,12 @@ func (h *fakeHost) ReadWatchLog() ([]byte, error) { return h.watchLog, nil }
 func (h *fakeHost) ReadPool() ([]byte, error)     { return h.pool, nil }
 func (h *fakeHost) ReadRegistry() ([]byte, error) { return h.registry, nil }
 func (h *fakeHost) ReadAccess() ([]byte, error)   { return h.access, nil }
-func (h *fakeHost) ReadBody() ([]byte, error)     { return h.body, nil }
-func (h *fakeHost) WriteBody(b []byte) error      { h.written = b; return nil }
+func (h *fakeHost) ReadUsage() ([]byte, error)    { return h.usage, nil }
+func (h *fakeHost) Usage(context.Context, string) (*node.UsageView, error) {
+	return h.report, h.reportErr
+}
+func (h *fakeHost) ReadBody() ([]byte, error) { return h.body, nil }
+func (h *fakeHost) WriteBody(b []byte) error  { h.written = b; return nil }
 func (h *fakeHost) WriteExitWant(m egress.Mode) error {
 	h.exitWrites = append(h.exitWrites, m)
 	return nil

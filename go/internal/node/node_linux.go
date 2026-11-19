@@ -26,6 +26,7 @@ import (
 	"awgrotator/internal/egress"
 	"awgrotator/internal/enroll"
 	"awgrotator/internal/proto"
+	"awgrotator/internal/usage"
 	"awgrotator/internal/warp"
 )
 
@@ -72,6 +73,13 @@ type Node struct {
 	exit     *egress.Controller
 	exitStop context.CancelFunc
 	exitDone chan struct{}
+
+	// The traffic count: the meter on the tunnel device and the history it
+	// is put into.
+	meter     *usage.Meter
+	usage     *usage.Store
+	usageStop context.CancelFunc
+	usageDone chan struct{}
 }
 
 // New returns a node for the given configuration.
@@ -96,7 +104,10 @@ func (n *Node) Start(ctx context.Context) error {
 		return fmt.Errorf("create %s: %w", n.cfg.Interface, err)
 	}
 
-	dev := device.NewDevice(tdev, conn.NewDefaultBind(),
+	// Every packet is counted on its way through, for the operator's view of
+	// where the traffic goes.
+	n.meter = usage.NewMeter()
+	dev := device.NewDevice(meteredTUN{Device: tdev, m: n.meter}, conn.NewDefaultBind(),
 		n.hs.Logger(device.NewLogger(device.LogLevelError, "awg: ").Errorf))
 
 	// The devices that registered before this start are accepted from the
@@ -145,12 +156,14 @@ func (n *Node) Start(ctx context.Context) error {
 		{"nat", n.configureNAT},
 		{"split resolver", n.startSplit},
 		{"device registration", n.startEnroll},
+		{"traffic count", n.startUsage},
 		{"control socket", n.startControl},
 		{"outside check responder", n.startReach},
 	} {
 		if err := step.fn(ctx); err != nil {
 			n.stopReach()
 			n.stopControl()
+			n.stopUsage()
 			n.stopEnroll()
 			if n.split != nil {
 				n.split.stop()
@@ -236,6 +249,9 @@ func (n *Node) Close() error {
 	n.stopControl()
 	n.stopEnroll()
 	n.stopExit()
+	// The last counts are written before the lock is taken: naming a site
+	// needs it.
+	n.stopUsage()
 
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -459,7 +475,8 @@ func (n *Node) startControl(context.Context) error {
 		return fmt.Errorf("restrict %s: %w", path, err)
 	}
 	ctl := &Controller{
-		Srv: n.enrollSrv,
+		Srv:   n.enrollSrv,
+		Usage: n.usage,
 		Peers: func() ([]PeerStatus, error) {
 			st, err := n.Status()
 			return st.Peers, err

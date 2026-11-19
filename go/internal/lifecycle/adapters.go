@@ -203,6 +203,27 @@ func (h *SystemHost) ReadWatchLog() ([]byte, error) {
 	return l.Tail(InheritedWatchBytes)
 }
 
+// ReadUsage implements Host.
+func (h *SystemHost) ReadUsage() ([]byte, error) {
+	raw, err := os.ReadFile(node.DefaultUsagePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return raw, err
+}
+
+// Usage implements Host, through the node's control socket.
+func (h *SystemHost) Usage(ctx context.Context, period string) (*node.UsageView, error) {
+	resp, err := node.Control(ctx, node.DefaultControlPath, node.ControlRequest{Op: node.OpUsage, Period: period})
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK || resp.Usage == nil {
+		return nil, errors.New(resp.Error)
+	}
+	return resp.Usage, nil
+}
+
 // ReadRegistry implements Host.
 func (h *SystemHost) ReadRegistry() ([]byte, error) {
 	raw, err := os.ReadFile(enroll.DefaultRegistryPath)

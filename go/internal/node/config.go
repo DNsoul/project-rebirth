@@ -210,12 +210,26 @@ func (e *EnrollConfig) validate(c *Config) error {
 	return nil
 }
 
+// TelegramNets are Telegram's own IPv4 networks as of this writing. The
+// clients route them through the tunnel by address; the traffic count names
+// what goes there "Telegram", and the operator's tool falls back on them when
+// it cannot fetch a fresh list.
+var TelegramNets = []string{
+	"91.105.192.0/23", "91.108.4.0/22", "91.108.8.0/22", "91.108.12.0/22",
+	"91.108.16.0/22", "91.108.20.0/22", "91.108.56.0/22", "149.154.160.0/20",
+	"185.76.151.0/24",
+}
+
 // Paths of the files the resolver reads, on the server.
 const (
 	DefaultRUSetPath       = "/var/lib/awgnode/ru4.txt"
 	DefaultForceTunnelPath = "/etc/awgnode/force_vpn.txt"
 	DefaultForceDirectPath = "/etc/awgnode/force_direct.txt"
 	DefaultPoolPath        = "/var/lib/awgnode/pool.json"
+
+	// DefaultUsagePath is the traffic history: sums by device and by site,
+	// handed to the replacement with the device list.
+	DefaultUsagePath = "/var/lib/awgnode/usage.json"
 )
 
 // SplitConfig describes the split-routing resolver.
