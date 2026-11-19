@@ -70,11 +70,17 @@ object InstalledApps {
             addDataScheme("package")
         }
         // Sent by the system only, which reaches a receiver closed to other apps.
-        if (Build.VERSION.SDK_INT >= 33) {
-            context.registerReceiver(r, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            context.registerReceiver(r, filter)
+        // Without the word the app still works: a new app is left out once the
+        // interface is opened again for another reason.
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                context.registerReceiver(r, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                context.registerReceiver(r, filter)
+            }
+            receiver = r
+        } catch (e: Exception) {
+            NativeLog.e("could not listen for installed and removed apps", e)
         }
-        receiver = r
     }
 }
