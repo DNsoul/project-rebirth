@@ -84,6 +84,7 @@ func run(log *slog.Logger, configPath string, tickEvery time.Duration) error {
 			API:     telegram.New(t.Token),
 			Devices: bot.SocketDevices{},
 			Owners:  t.Owners,
+			Zone:    cfg.OwnerZone(),
 			Log:     log.With("component", "bot"),
 		}
 	}
@@ -113,6 +114,10 @@ func run(log *slog.Logger, configPath string, tickEvery time.Duration) error {
 		// Russia, written down for the record. Nothing acts on it.
 		Watch:   &lifecycle.WatchLog{Path: filepath.Join(cfg.Data(), lifecycle.WatchLogName)},
 		Reverse: lifecycle.NewNetProber(),
+
+		// When the server is paid for next and how much traffic it has used,
+		// for the operator's reminders. Providers that do not tell are skipped.
+		Accounts: cloud,
 
 		ConfigPath: configPath,
 		OnEvent: func(e lifecycle.Event) {

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"awgrotator/internal/cherry"
@@ -29,6 +30,9 @@ var cherryRegions = map[string]string{
 type cherryProvider struct {
 	c   *cherry.Client
 	set Settings
+
+	mu   sync.Mutex
+	team int // the team our project belongs to, found once
 }
 
 func openCherry(s Settings) (Provider, error) { return NewCherry(cherry.New(s.Key), s) }
@@ -154,6 +158,113 @@ func (p *cherryProvider) EnsureSSHKey(ctx context.Context, label, pub string) (s
 		return "", err
 	}
 	return strconv.Itoa(id), nil
+}
+
+// Account reads the server's price, its next payment and the traffic it has
+// used, and the money left on the team's balance. Like Get, it refuses a
+// server that is not ours.
+func (p *cherryProvider) Account(ctx context.Context, id string) (Account, error) {
+	n, err := strconv.Atoi(id)
+	if err != nil {
+		return Account{}, fmt.Errorf("cherry/%s: %w", id, ErrNotFound)
+	}
+	s, err := p.c.Server(ctx, n)
+	if err != nil {
+		if errors.Is(err, cherry.ErrNotFound) {
+			return Account{}, fmt.Errorf("cherry/%s: %w", id, ErrNotFound)
+		}
+		return Account{}, err
+	}
+	if !p.ours(*s) {
+		return Account{}, fmt.Errorf("cherry/%s: %w", id, ErrNotOurs)
+	}
+	a := Account{
+		TrafficUsed:  s.TrafficUsed,
+		TrafficLimit: allowanceBytes(s.Plan.Specs.Bandwidth.Name),
+	}
+	if pr := s.Pricing; pr != nil {
+		a.Price, a.Currency, a.AutoRenew = pr.Price, pr.Currency, pr.AutoRenewal
+		if pr.PriceTotal > 0 {
+			a.Price = pr.PriceTotal
+		}
+		if pr.NextPaymentAt != "" {
+			if t, err := time.Parse(time.RFC3339, pr.NextPaymentAt); err == nil {
+				a.NextPayment = t.UTC()
+			}
+		}
+	}
+
+	// The balance is the team's. Not knowing it is no reason to withhold the
+	// rest, which is what the reminders need most.
+	if team, err := p.teamCredit(ctx); err == nil {
+		a.Balance, a.HasBalance = team.Account.Remaining, true
+		if a.Currency == "" {
+			a.Currency = team.Account.Currency
+		}
+	}
+	return a, nil
+}
+
+// teamCredit returns the balance of the team our project belongs to.
+func (p *cherryProvider) teamCredit(ctx context.Context) (cherry.Credit, error) {
+	teams, err := p.c.Teams(ctx)
+	if err != nil {
+		return cherry.Credit{}, err
+	}
+	p.mu.Lock()
+	known := p.team
+	p.mu.Unlock()
+	if known == 0 {
+		switch len(teams) {
+		case 0:
+			return cherry.Credit{}, errors.New("cherry: the key belongs to no team")
+		case 1:
+			known = teams[0].ID
+		default:
+			for _, t := range teams {
+				projects, err := p.c.Projects(ctx, t.ID)
+				if err != nil {
+					return cherry.Credit{}, err
+				}
+				if slices.ContainsFunc(projects, func(pr cherry.Project) bool { return pr.ID == p.set.Project }) {
+					known = t.ID
+					break
+				}
+			}
+		}
+		if known == 0 {
+			return cherry.Credit{}, errors.New("cherry: no team holds our project")
+		}
+		p.mu.Lock()
+		p.team = known
+		p.mu.Unlock()
+	}
+	for _, t := range teams {
+		if t.ID == known {
+			return t.Credit, nil
+		}
+	}
+	return cherry.Credit{}, errors.New("cherry: our team is no longer listed")
+}
+
+// allowanceBytes reads an allowance as Cherry writes it ("1TB", "500GB"). The
+// units are decimal, as providers bill them. Anything else is unknown, zero.
+func allowanceBytes(s string) int64 {
+	s = strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(s), " ", ""))
+	units := []struct {
+		suffix string
+		size   float64
+	}{{"TB", 1e12}, {"GB", 1e9}}
+	for _, u := range units {
+		if num, ok := strings.CutSuffix(s, u.suffix); ok {
+			v, err := strconv.ParseFloat(num, 64)
+			if err != nil || v <= 0 {
+				return 0
+			}
+			return int64(v * u.size)
+		}
+	}
+	return 0
 }
 
 func (p *cherryProvider) ours(s cherry.Server) bool {

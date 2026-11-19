@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"awgrotator/internal/cloud"
 	"awgrotator/internal/egress"
 	"awgrotator/internal/fleet"
 	"awgrotator/internal/proto"
@@ -39,6 +40,9 @@ type Intervals struct {
 
 	// Watch is how often the availability log gets a line.
 	Watch time.Duration
+
+	// Account is how often the provider is asked about money and traffic.
+	Account time.Duration
 }
 
 // StatusGrace is how long the node's status may be missing or stale before the
@@ -80,6 +84,9 @@ func (i Intervals) withDefaults() Intervals {
 	if i.Watch == 0 {
 		i.Watch = DefaultWatchEvery
 	}
+	if i.Account == 0 {
+		i.Account = DefaultAccountEvery
+	}
 	return i
 }
 
@@ -99,6 +106,10 @@ type Manager struct {
 	// optional, and nothing here acts on what is found.
 	Watch   *WatchLog
 	Reverse ReverseProber
+
+	// Accounts tells how the server is paid for and how much traffic it has
+	// used, for the operator's reminders. Optional.
+	Accounts AccountSource
 
 	Every Intervals
 	Now   func() time.Time
@@ -143,6 +154,12 @@ type Manager struct {
 	behind        bool
 
 	watch watchState
+
+	// What the provider last said about money and traffic, and when it was
+	// last asked.
+	account        *cloud.Account
+	accountAt      time.Time
+	lastAccountTry time.Time
 
 	pending   *MoveRequest
 	statusDue bool
@@ -278,6 +295,8 @@ func (m *Manager) Tick(ctx context.Context) error {
 		return err
 	}
 	m.maybeWatch(ctx, now)
+	m.maybeAccount(ctx, now)
+	m.noteAccount(now)
 	m.maybeStatus(ctx, now)
 	m.maybeHeartbeat(ctx, now)
 	m.maybeReconcile(ctx, now)

@@ -237,6 +237,40 @@ type TelegramConfig struct {
 	// replacements as on this one. It lives here because without the bot
 	// nobody could approve anything.
 	Approval bool `json:"approval,omitempty"`
+
+	// UTCOffset is the owners' clock, as "+07:00": reminders wait for their
+	// daytime, and times are written in it where Telegram cannot show them in
+	// the reader's own. Empty means Moscow time.
+	UTCOffset string `json:"utc_offset,omitempty"`
+}
+
+// DefaultUTCOffset is the owners' clock when the configuration does not say.
+const DefaultUTCOffset = "+03:00"
+
+// ParseUTCOffset reads "+07:00" or "-03:30" as a fixed zone.
+func ParseUTCOffset(s string) (*time.Location, error) {
+	t, err := time.Parse("-07:00", s)
+	if err != nil {
+		return nil, fmt.Errorf("%q is not an offset from UTC like +07:00", s)
+	}
+	_, off := t.Zone()
+	return time.FixedZone("UTC"+s, off), nil
+}
+
+// FormatUTCOffset writes a zone's current offset as "+07:00".
+func FormatUTCOffset(t time.Time) string { return t.Format("-07:00") }
+
+// OwnerZone is the owners' clock.
+func (c *Config) OwnerZone() *time.Location {
+	off := DefaultUTCOffset
+	if c.Telegram != nil && c.Telegram.UTCOffset != "" {
+		off = c.Telegram.UTCOffset
+	}
+	if loc, err := ParseUTCOffset(off); err == nil {
+		return loc
+	}
+	loc, _ := ParseUTCOffset(DefaultUTCOffset)
+	return loc
 }
 
 func (t *TelegramConfig) validate() error {
@@ -245,6 +279,11 @@ func (t *TelegramConfig) validate() error {
 		return errors.New("telegram: no bot token")
 	case len(t.Owners) == 0:
 		return errors.New("telegram: nobody to answer")
+	}
+	if t.UTCOffset != "" {
+		if _, err := ParseUTCOffset(t.UTCOffset); err != nil {
+			return fmt.Errorf("telegram: %w", err)
+		}
 	}
 	for _, id := range t.Owners {
 		if id <= 0 {

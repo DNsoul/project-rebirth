@@ -38,6 +38,12 @@ type Snapshot struct {
 	Billing   cloud.Billing
 	PaidUntil time.Time
 
+	// Account is what the provider last said about money and traffic, at
+	// AccountAt; nil until it has answered, and for a provider that does not
+	// tell. When it knows the next payment, PaidUntil is that date.
+	Account   *cloud.Account
+	AccountAt time.Time
+
 	// Places are where a move can go.
 	Places []PlaceConfig
 
@@ -112,7 +118,10 @@ const (
 	EventMovePublished EventKind = "move_published" // this server handed over
 	EventCurrent       EventKind = "current"        // this server took over
 	EventHealth        EventKind = "health"
-	EventExit          EventKind = "exit" // the clients' way out changed
+	EventExit          EventKind = "exit"    // the clients' way out changed
+	EventPayment       EventKind = "payment" // the next payment is near
+	EventPaid          EventKind = "paid"    // the next period has been paid
+	EventQuota         EventKind = "quota"   // a share of the traffic allowance is spent
 )
 
 // Event is one such thing.
@@ -125,6 +134,12 @@ type Event struct {
 	Health     Verdict
 	Err        string
 	Exit       egress.State // EventExit: how it stands now
+
+	// Account is what the provider said, for EventPayment, EventPaid and
+	// EventQuota; Percent is the share of the allowance used, for EventQuota.
+	Account   *cloud.Account
+	Percent   int
+	CreatedAt time.Time
 }
 
 // ErrBusy is returned when the operator's actions are coming faster than the
@@ -250,6 +265,9 @@ func (m *Manager) Apply(ctx context.Context, a Action) {
 }
 
 func (m *Manager) emit(e Event) {
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = m.Cfg.CreatedTime()
+	}
 	if m.OnEvent != nil {
 		m.OnEvent(e)
 	}
@@ -320,6 +338,13 @@ func (m *Manager) publishSnapshot(ctx context.Context) {
 	}
 	if next, ok := NextAutoMove(m.Cfg.Policy, m.Cfg.CreatedTime(), time.Duration(j.AgeJitterSec)*time.Second, m.Cfg.PaidUntil()); ok {
 		s.NextAutoMove = next
+	}
+	if m.account != nil {
+		a := *m.account
+		s.Account, s.AccountAt = &a, m.accountAt
+		if !a.NextPayment.IsZero() {
+			s.PaidUntil = a.NextPayment
+		}
 	}
 	s.ExitWant = m.Cfg.Policy.ExitMode()
 	if st, err := m.Host.NodeStatus(ctx); err == nil {

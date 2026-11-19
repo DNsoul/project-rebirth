@@ -86,10 +86,12 @@ type Update struct {
 }
 
 // Button is a button under a message. Data comes back in the CallbackQuery
-// when it is pressed; Telegram allows at most 64 bytes of it.
+// when it is pressed; Telegram allows at most 64 bytes of it. A button with a
+// URL instead opens that page and sends nothing back.
 type Button struct {
 	Text string `json:"text"`
-	Data string `json:"callback_data"`
+	Data string `json:"callback_data,omitempty"`
+	URL  string `json:"url,omitempty"`
 }
 
 // Keyboard is rows of buttons.

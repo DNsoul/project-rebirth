@@ -49,9 +49,27 @@ func (c *Client) WithBase(base string) *Client {
 }
 
 // Team is the account's team; projects live inside it.
+//
+// The API also returns the account holder's billing details (name, address)
+// with a team. They are deliberately not decoded: nothing here needs them, and
+// what is not read cannot end up in a log or a message.
 type Team struct {
-	ID   int    `json:"id"`
-	Name string `json:"name"`
+	ID     int    `json:"id"`
+	Name   string `json:"name"`
+	Credit Credit `json:"credit"`
+}
+
+// Credit is the money on the team's balance.
+type Credit struct {
+	// Account is what was paid in; Promo is what Cherry gave for free.
+	Account Money `json:"account"`
+	Promo   Money `json:"promo"`
+}
+
+// Money is an amount left on a balance.
+type Money struct {
+	Remaining float64 `json:"remaining"`
+	Currency  string  `json:"currency"`
 }
 
 // Project groups servers.
@@ -67,7 +85,7 @@ type Server struct {
 	State    string            `json:"state"`
 	Status   string            `json:"status"`
 	Region   Slug              `json:"region"`
-	Plan     Slug              `json:"plan"`
+	Plan     Plan              `json:"plan"`
 	Project  Project           `json:"project"`
 	IPs      []IPAddress       `json:"ip_addresses"`
 	Tags     map[string]string `json:"tags"`
@@ -76,13 +94,53 @@ type Server struct {
 	// TerminationDate is set for a server on a longer billing cycle: the day
 	// the paid period ends.
 	TerminationDate string `json:"termination_date"`
+
+	// Pricing is what the server costs and when it is paid for next.
+	Pricing *Pricing `json:"pricing"`
+
+	// TrafficUsed is the outgoing traffic counted against the allowance. Cherry
+	// counts only what leaves its servers, over a rolling thirty days.
+	TrafficUsed int64 `json:"traffic_used_bytes"`
 }
 
-// Slug names a region or a plan.
+// Slug names a region.
 type Slug struct {
 	ID   int    `json:"id"`
 	Name string `json:"name"`
 	Slug string `json:"slug"`
+}
+
+// Plan is a server's size, with what it includes.
+type Plan struct {
+	Slug
+	Specs struct {
+		Bandwidth struct {
+			// Name is the monthly traffic allowance as Cherry writes it: "1TB".
+			Name string `json:"name"`
+		} `json:"bandwidth"`
+	} `json:"specs"`
+}
+
+// Pricing is a server's price and its next payment.
+type Pricing struct {
+	Currency string `json:"currency"`
+
+	// Unit is the billing period, "Hourly" or "Monthly".
+	Unit string `json:"unit"`
+
+	// Price is per period with tax included; PriceTotal says the same in the
+	// samples seen, and is preferred when given.
+	Price      float64 `json:"price"`
+	PriceTotal float64 `json:"price_total"`
+
+	// NextPaymentAt is when the paid period ends and the next one is due, as
+	// RFC 3339 with the account's offset. Empty for a server paid by the hour.
+	NextPaymentAt string `json:"next_payment_at"`
+
+	// AutoRenewal says Cherry pays the next period itself. Without a card on
+	// the account it is off, and the server stops at NextPaymentAt unless the
+	// period is paid by hand from the team's balance.
+	AutoRenewal bool `json:"auto_renewal"`
 }
 
 // IPAddress is one address of a server.

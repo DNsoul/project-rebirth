@@ -590,9 +590,17 @@ func TestEveryButtonFitsTelegramsLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	views = append(views, r.bot.devicesView(ctx))
+	r.mgr.snap.Provider = "cherry"
+	views = append(views, r.bot.paymentReminder(cloud.Account{NextPayment: r.now.Add(time.Hour)}))
 	for _, v := range views {
 		for _, row := range v.kb {
 			for _, b := range row {
+				if b.URL != "" {
+					if b.Data != "" || !strings.HasPrefix(b.URL, "https://") {
+						t.Errorf("link button %q: data %q, url %q", b.Text, b.Data, b.URL)
+					}
+					continue
+				}
 				if len(b.Data) > 64 || b.Data == "" {
 					t.Errorf("button %q has %d bytes of data", b.Text, len(b.Data))
 				}

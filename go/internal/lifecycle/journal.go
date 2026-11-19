@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 )
@@ -71,13 +72,44 @@ type Journal struct {
 
 	LastStatusAt    int64 `json:"last_status_at"`
 	LastHeartbeatAt int64 `json:"last_heartbeat_at"`
+
+	// Notices are the reminders the operator has already been sent about this
+	// server's payment and traffic, so a restart does not send them again. A
+	// replacement starts without them: its payments and traffic are its own.
+	Notices []string `json:"notices,omitempty"`
+
+	// PaidSeen is the next payment date last read from the provider, as Unix
+	// time. When the provider's date moves on, the period has been paid.
+	PaidSeen int64 `json:"paid_seen,omitempty"`
 }
 
 // How much history to keep.
 const (
 	maxAttempts = 50
 	maxExecuted = 200
+	maxNotices  = 100
 )
+
+// Noticed reports whether a reminder has already been sent.
+func (j Journal) Noticed(key string) bool { return slices.Contains(j.Notices, key) }
+
+// MarkNoticed remembers reminders as sent, forgetting the oldest beyond the
+// limit.
+func (j *Journal) MarkNoticed(keys ...string) {
+	for _, k := range keys {
+		if !j.Noticed(k) {
+			j.Notices = append(j.Notices, k)
+		}
+	}
+	if len(j.Notices) > maxNotices {
+		j.Notices = j.Notices[len(j.Notices)-maxNotices:]
+	}
+}
+
+// Unnotice forgets that a reminder was sent, so it can be sent again.
+func (j *Journal) Unnotice(key string) {
+	j.Notices = slices.DeleteFunc(j.Notices, func(k string) bool { return k == key })
+}
 
 // Latest returns the most recent attempt, or nil.
 func (j Journal) Latest() *Attempt {
@@ -162,6 +194,7 @@ func (s *JournalStore) copy() Journal {
 	c := s.j
 	c.Attempts = append([]Attempt(nil), s.j.Attempts...)
 	c.Executed = append([]string(nil), s.j.Executed...)
+	c.Notices = append([]string(nil), s.j.Notices...)
 	return c
 }
 

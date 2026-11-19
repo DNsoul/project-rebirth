@@ -78,6 +78,17 @@ func TestMessagesGoAsPlainTextWithButtons(t *testing.T) {
 	if btn := kb[0].([]any)[0].(map[string]any); btn["callback_data"] != "y" || btn["text"] != "Да" {
 		t.Errorf("button = %v", btn)
 	}
+
+	// A link button carries only its address: Telegram refuses a button of
+	// two kinds.
+	if _, err := c.Send(context.Background(), 42, "pay", Keyboard{{{Text: "Оплатить", URL: "https://example.com/"}}}); err != nil {
+		t.Fatal(err)
+	}
+	kb = got["reply_markup"].(map[string]any)["inline_keyboard"].([]any)
+	btn := kb[0].([]any)[0].(map[string]any)
+	if _, has := btn["callback_data"]; has || btn["url"] != "https://example.com/" {
+		t.Errorf("link button = %v", btn)
+	}
 }
 
 func TestAConflictIsRecognised(t *testing.T) {

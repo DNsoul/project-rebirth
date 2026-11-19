@@ -87,6 +87,9 @@ func telegramFor(st *store.State, secrets config.Secrets) *lifecycle.TelegramCon
 		Token:    secrets.TelegramToken,
 		Owners:   st.Telegram.OwnerIDs(),
 		Approval: st.Telegram.Approval,
+		// The operator's own clock, taken from the computer this tool runs on:
+		// the bot keeps reminders for their daytime and writes times in it.
+		UTCOffset: lifecycle.FormatUTCOffset(time.Now()),
 	}
 }
 

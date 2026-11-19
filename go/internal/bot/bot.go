@@ -73,6 +73,10 @@ type Bot struct {
 	Log *slog.Logger
 	Now func() time.Time
 
+	// Zone is the owners' clock, which times are written in. Nil means the
+	// server's own.
+	Zone *time.Location
+
 	// Timings, shortened in tests.
 	Wait       time.Duration // how long one long poll waits for updates
 	Idle       time.Duration // the pause while not the server that answers
@@ -98,6 +102,13 @@ func (b *Bot) now() time.Time {
 		return b.Now()
 	}
 	return time.Now()
+}
+
+func (b *Bot) zone() *time.Location {
+	if b.Zone != nil {
+		return b.Zone
+	}
+	return time.Local
 }
 
 func (b *Bot) log() *slog.Logger {
@@ -207,7 +218,8 @@ func (b *Bot) watch(ctx context.Context) {
 			// has just taken over says so before its snapshot shows it;
 			// otherwise only the server that answers speaks.
 			if snap.Current || e.Kind == lifecycle.EventMovePublished || e.Kind == lifecycle.EventCurrent {
-				b.broadcast(ctx, eventText(e), nil)
+				v := b.eventView(e)
+				b.broadcast(ctx, v.text, v.kb)
 			}
 		case <-t.C:
 			b.announceRequests(ctx)

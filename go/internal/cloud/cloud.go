@@ -104,6 +104,43 @@ type Provider interface {
 	EnsureSSHKey(ctx context.Context, label, pub string) (string, error)
 }
 
+// Account is what a provider says about paying for one server and about the
+// traffic it has used. Whatever the provider does not say is left zero.
+type Account struct {
+	// NextPayment is when the paid period ends and the next one is due. Zero
+	// for a server paid by the hour.
+	NextPayment time.Time
+
+	// AutoRenew says the provider pays the next period by itself. Without it a
+	// server paid by the month stops at NextPayment unless the operator pays.
+	AutoRenew bool
+
+	// Price is one period, tax included, in Currency.
+	Price    float64
+	Currency string
+
+	// Balance is the money left on the account, when HasBalance says the
+	// provider told.
+	Balance    float64
+	HasBalance bool
+
+	// TrafficUsed is what counts against the allowance now and TrafficLimit
+	// the allowance; zero when not known. Cherry counts only outgoing traffic,
+	// over a rolling thirty days.
+	TrafficUsed  int64
+	TrafficLimit int64
+}
+
+// AccountReader is a provider that can tell how a server is paid for. Not
+// every provider can: the key the project holds may not be allowed to see the
+// account.
+type AccountReader interface {
+	Account(ctx context.Context, id string) (Account, error)
+}
+
+// ErrNoAccount means the provider does not tell how its servers are paid for.
+var ErrNoAccount = errors.New("this provider does not tell how its servers are paid for")
+
 // Settings is how one provider is used: the credentials and what servers are
 // made of. Fields a provider does not need are left empty.
 type Settings struct {
@@ -232,6 +269,19 @@ func (s Set) Delete(ctx context.Context, provider, id string) error {
 		return err
 	}
 	return p.Delete(ctx, id)
+}
+
+// Account asks the named provider how one of our servers is paid for.
+func (s Set) Account(ctx context.Context, provider, id string) (Account, error) {
+	p, err := s.Get(provider)
+	if err != nil {
+		return Account{}, err
+	}
+	r, ok := p.(AccountReader)
+	if !ok {
+		return Account{}, ErrNoAccount
+	}
+	return r.Account(ctx, id)
 }
 
 func (s Set) names() []string {

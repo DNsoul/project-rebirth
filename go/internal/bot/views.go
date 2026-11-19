@@ -117,7 +117,11 @@ func duration(d time.Duration) string {
 	return fmt.Sprintf("%d сут", int(d/(24*time.Hour)))
 }
 
-func stamp(t time.Time) string { return t.Local().Format("02.01 15:04") }
+// stamp writes a moment on the owners' clock.
+func (b *Bot) stamp(t time.Time) string { return t.In(b.zone()).Format("02.01 15:04") }
+
+// day writes a date on the owners' clock.
+func (b *Bot) day(t time.Time) string { return t.In(b.zone()).Format("02.01") }
 
 func bytesWords(n int64) string {
 	switch {
@@ -136,15 +140,18 @@ func (b *Bot) statusView(ctx context.Context) view {
 	now := b.now()
 	var out strings.Builder
 	fmt.Fprintf(&out, "Сервер: %s · %s, поколение %d, работает %s.\n", regionName(s.Region), providerName(s.Provider), s.Generation, duration(now.Sub(s.CreatedAt)))
-	if !s.PaidUntil.IsZero() {
-		fmt.Fprintf(&out, "Оплачен помесячно, до %s.\n", stamp(s.PaidUntil))
+	if line := b.paymentLine(s); line != "" {
+		out.WriteString(line + "\n")
+	}
+	if line := b.trafficLine(s); line != "" {
+		out.WriteString(line + "\n")
 	}
 	fmt.Fprintf(&out, "Состояние: %s.\n", healthWords(s.Health))
 	if s.Moving {
 		out.WriteString("Сейчас идёт переезд.\n")
 	}
 	if w := s.Watch; w != nil {
-		fmt.Fprintf(&out, "Связь с российскими сайтами: %s с %s.\n", watchWords(w.Round), stamp(time.Unix(w.Since, 0)))
+		fmt.Fprintf(&out, "Связь с российскими сайтами: %s с %s.\n", watchWords(w.Round), b.stamp(time.Unix(w.Since, 0)))
 		if w.Stuck > 0 {
 			fmt.Fprintf(&out, "Стучатся и не могут войти: %d устр. Ответы сервера до них не доходят.\n", w.Stuck)
 		}
@@ -170,13 +177,13 @@ func (b *Bot) statusView(ctx context.Context) view {
 	}
 	fmt.Fprintf(&out, "Автопереезд по возрасту: %s", onOff(s.AutoAge))
 	if !s.NextAutoMove.IsZero() {
-		fmt.Fprintf(&out, " (следующий около %s)", stamp(s.NextAutoMove))
+		fmt.Fprintf(&out, " (следующий около %s)", b.stamp(s.NextAutoMove))
 	}
 	fmt.Fprintf(&out, "; при блокировке: %s.\n", onOff(s.AutoBlock))
-	fmt.Fprintf(&out, "Выход в интернет: %s.\n", exitWords(s.ExitWant, s.Exit))
+	fmt.Fprintf(&out, "Выход в интернет: %s.\n", b.exitWords(s.ExitWant, s.Exit))
 	fmt.Fprintf(&out, "Сертификат действует ещё %d дн.\n", s.CertDaysLeft)
 	if m := s.LastMove; m != nil {
-		fmt.Fprintf(&out, "Последний переезд: %s, %s, итог: %s.", stamp(time.Unix(m.At, 0)), triggerWords(m.Trigger), m.State)
+		fmt.Fprintf(&out, "Последний переезд: %s, %s, итог: %s.", b.stamp(time.Unix(m.At, 0)), triggerWords(m.Trigger), m.State)
 		if m.Error != "" {
 			fmt.Fprintf(&out, "\nОшибка: %s", firstLine(m.Error))
 		}
@@ -275,7 +282,7 @@ func (b *Bot) requestsView(ctx context.Context) view {
 	} else {
 		fmt.Fprintf(&out, "Ждут одобрения (%d):", len(o.Pending))
 		for i, w := range o.Pending {
-			fmt.Fprintf(&out, "\n%d. %s · код %s · просит с %s", i+1, deviceName(w.Name), w.Code, stamp(time.Unix(w.AskedAt, 0)))
+			fmt.Fprintf(&out, "\n%d. %s · код %s · просит с %s", i+1, deviceName(w.Name), w.Code, b.stamp(time.Unix(w.AskedAt, 0)))
 			if w.KeyChange {
 				out.WriteString(" (уже было одобрено, ключ сменился)")
 			}
@@ -289,7 +296,7 @@ func (b *Bot) requestsView(ctx context.Context) view {
 		fmt.Fprintf(&out, "\n\nОтказано (%d):", len(o.Denied))
 		for i, d := range o.Denied {
 			n := len(o.Pending) + i + 1
-			fmt.Fprintf(&out, "\n%d. %s · код %s · %s", n, deviceName(d.Name), d.Code, stamp(time.Unix(d.At, 0)))
+			fmt.Fprintf(&out, "\n%d. %s · код %s · %s", n, deviceName(d.Name), d.Code, b.stamp(time.Unix(d.At, 0)))
 			if d.KeyOnly {
 				out.WriteString(" (только новый ключ)")
 			}
@@ -354,7 +361,7 @@ func confirmExit(on bool) view {
 }
 
 // exitWords says where the devices' traffic leaves from.
-func exitWords(want egress.Mode, st *egress.Status) string {
+func (b *Bot) exitWords(want egress.Mode, st *egress.Status) string {
 	if want != egress.WARP {
 		if st != nil && st.State != egress.StateDirect {
 			return "переключаю на прямой, с адреса сервера"
@@ -368,7 +375,7 @@ func exitWords(want egress.Mode, st *egress.Status) string {
 	case egress.StateWARP:
 		return "через WARP, сайты видят адрес Cloudflare"
 	case egress.StateFallback:
-		return fmt.Sprintf("WARP не отвечает с %s, временно напрямую", stamp(st.Since))
+		return fmt.Sprintf("WARP не отвечает с %s, временно напрямую", b.stamp(st.Since))
 	}
 	return "включаю WARP"
 }

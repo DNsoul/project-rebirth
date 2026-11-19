@@ -105,6 +105,9 @@ func (f *fakeCherry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(s)
+	case r.Method == http.MethodGet && r.URL.Path == "/teams":
+		_, _ = w.Write([]byte(`[{"id":5,"name":"t","credit":{"account":{"remaining":7.36,"usage":0.38,"currency":"EUR"},` +
+			`"promo":{"remaining":0,"usage":0,"currency":"EUR"}},"billing":{"first_name":"Someone","cc_verified":false}}]`))
 	case r.Method == http.MethodDelete && scan(r.URL.Path, "/servers/%d", &id):
 		f.deleted = append(f.deleted, id)
 		delete(f.servers, id)
@@ -180,6 +183,54 @@ func TestCherryNeverDeletesSomeoneElsesServer(t *testing.T) {
 	}
 	if len(f.deleted) != 1 || f.deleted[0] != 10 {
 		t.Errorf("deleted %v", f.deleted)
+	}
+}
+
+func TestCherryAccountTellsPaymentTrafficAndBalance(t *testing.T) {
+	f := newFakeCherry()
+	f.servers[10]["traffic_used_bytes"] = 425863880509
+	f.servers[10]["plan"] = map[string]any{"slug": "B2-1-1gb-20s-shared", "specs": map[string]any{"bandwidth": map[string]any{"name": "1TB"}}}
+	f.servers[10]["pricing"] = map[string]any{"currency": "EUR", "unit": "Monthly", "price": 3.63, "price_total": 3.63,
+		"next_payment_at": "2026-12-12T19:50:43+02:00", "auto_renewal": false}
+	p := cherryFor(t, f).(AccountReader)
+	ctx := context.Background()
+
+	a, err := p.Account(ctx, "10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Account{
+		NextPayment: time.Date(2026, 12, 12, 17, 50, 43, 0, time.UTC),
+		Price:       3.63, Currency: "EUR",
+		Balance: 7.36, HasBalance: true,
+		TrafficUsed: 425863880509, TrafficLimit: 1e12,
+	}
+	if a != want {
+		t.Errorf("Account = %+v\nwant      %+v", a, want)
+	}
+
+	for _, id := range []string{"11", "7000001"} {
+		if _, err := p.Account(ctx, id); !errors.Is(err, ErrNotOurs) {
+			t.Errorf("Account(%s) = %v, want ErrNotOurs", id, err)
+		}
+	}
+	if _, err := p.Account(ctx, "999"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Account(missing) = %v, want ErrNotFound", err)
+	}
+}
+
+func TestAllowanceIsReadInDecimalUnits(t *testing.T) {
+	for in, want := range map[string]int64{"1TB": 1e12, "5 TB": 5e12, "500GB": 5e11, "1.5TB": 15e11, "": 0, "unmetered": 0, "-1TB": 0} {
+		if got := allowanceBytes(in); got != want {
+			t.Errorf("allowanceBytes(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+func TestASetSaysWhenAProviderDoesNotTellAboutMoney(t *testing.T) {
+	s := Set{"vultr": countingProvider{name: "vultr"}}
+	if _, err := s.Account(context.Background(), "vultr", "1"); !errors.Is(err, ErrNoAccount) {
+		t.Errorf("Account = %v, want ErrNoAccount", err)
 	}
 }
 
