@@ -32,37 +32,36 @@ func dueIn(r *rig, d time.Duration) cloud.Account {
 	}
 }
 
-func TestStatusSaysUntilWhenItIsPaidHowAndWhatTrafficIsLeft(t *testing.T) {
+func TestTheServerSaysUntilWhenItIsPaidHowAndWhatTrafficIsLeft(t *testing.T) {
 	r := newRig(t)
 	a := dueIn(r, 23*24*time.Hour)
 	r = cherryRig(t, a)
-	text := r.bot.statusView(context.Background()).text
+	text := r.bot.serverView().text
 	paid := a.NextPayment.In(tomsk).Format("02.01 15:04")
 	out := r.now.Add(time.Duration(580.0 / 60 * 24 * float64(time.Hour))).In(tomsk).Format("02.01")
 	for _, want := range []string{
-		"Оплачен до " + paid + ", продлевать вручную.",
-		"Трафик: 420 из 1000 ГБ, при таком темпе хватит до " + out + ".",
+		"Оплачен    до " + paid, "Продление  вручную", "Трафик     420 из 1000 ГБ", "Хватит до  " + out,
 	} {
 		if !strings.Contains(text, want) {
-			t.Errorf("status lacks %q:\n%s", want, text)
+			t.Errorf("server screen lacks %q:\n%s", want, text)
 		}
 	}
 
 	a.AutoRenew = true
 	r = cherryRig(t, a)
-	if text := r.bot.statusView(context.Background()).text; !strings.Contains(text, "продлится сам") {
+	if text := r.bot.serverView().text; !strings.Contains(text, "Продление  само") {
 		t.Errorf("auto renewal not said:\n%s", text)
 	}
 	a.Balance = 1
 	r = cherryRig(t, a)
-	if text := r.bot.statusView(context.Background()).text; !strings.Contains(text, "на балансе не хватает: 1,00 € из 3,63 €") {
+	if text := r.bot.serverView().text; !strings.Contains(text, "Продление  не хватает денег") {
 		t.Errorf("shortage not said:\n%s", text)
 	}
 
 	// Little used: no date it runs out within the month.
 	a.TrafficUsed = 10e9
 	r = cherryRig(t, a)
-	if text := r.bot.statusView(context.Background()).text; !strings.Contains(text, "Трафик: 10 из 1000 ГБ.") {
+	if text := r.bot.serverView().text; !strings.Contains(text, "Трафик     10 из 1000 ГБ") || strings.Contains(text, "Хватит до") {
 		t.Errorf("light use:\n%s", text)
 	}
 }

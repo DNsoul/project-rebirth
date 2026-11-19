@@ -110,7 +110,7 @@ func TestEachAddressIsGivenItsSite(t *testing.T) {
 	}
 	for addr, want := range map[string]string{
 		"198.18.0.7": "YouTube", "198.18.3.3": SiteUnknown, "10.8.0.1": SiteServer,
-		"149.154.167.50": SiteTelegram, "8.8.8.8": SiteUnknown,
+		"149.154.167.50": SiteTelegram, "8.8.8.8": SiteElsewhere,
 	} {
 		if got := c.Site(netip.MustParseAddr(addr)); got != want {
 			t.Errorf("%s = %q, want %q", addr, got, want)

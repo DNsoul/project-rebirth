@@ -25,9 +25,14 @@ const (
 	// route through the tunnel by address rather than by name.
 	SiteTelegram = "Telegram"
 
-	// SiteUnknown is traffic to a stand-in whose name is not known, or to an
-	// address the clients route through the tunnel for another reason.
+	// SiteUnknown is traffic to a stand-in whose name is not known: handed out
+	// before names were kept, and still used by a connection opened then.
 	SiteUnknown = "неизвестно"
+
+	// SiteElsewhere is traffic to a real address that is neither the
+	// server's nor Telegram's: a client that sends more than the stand-ins
+	// through the tunnel.
+	SiteElsewhere = "другие адреса"
 
 	// SiteOther is what is left once a list has been cut to its largest
 	// entries.

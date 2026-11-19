@@ -36,6 +36,7 @@ type fakeAPI struct {
 	polls    []int64
 	sends    []sent
 	edits    []sent
+	asks     []sent
 	answers  []string
 }
 
@@ -83,6 +84,13 @@ func (f *fakeAPI) Answer(_ context.Context, _ string, text string) error {
 }
 
 func (f *fakeAPI) SetCommands(context.Context, []telegram.Command) error { return nil }
+
+func (f *fakeAPI) Ask(_ context.Context, chat int64, text, _ string) (telegram.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.asks = append(f.asks, sent{chat: chat, text: text})
+	return telegram.Message{MessageID: 500 + int64(len(f.asks)), Chat: telegram.Chat{ID: chat, Type: "private"}}, nil
+}
 
 func (f *fakeAPI) snapshot() (sends, edits []sent, answers []string) {
 	f.mu.Lock()
@@ -223,20 +231,36 @@ func TestStrangersGetNoAnswerAtAll(t *testing.T) {
 	}
 }
 
-func TestTheOwnerSeesTheStatus(t *testing.T) {
+func TestTheOwnerSeesHowThingsStand(t *testing.T) {
 	r := newRig(t)
 	r.mgr.set(func(s *lifecycle.Snapshot) { s.Why = "could not reach 203.0.113.9:22" })
 	r.ask(t, 1, 0x11, "phone")
-	r.bot.handle(context.Background(), message(owner, "private", "/status"))
+	ctx := context.Background()
+	r.bot.handle(ctx, message(owner, "private", "/start"))
+	r.bot.handle(ctx, message(owner, "private", "/status"))
 	sends, _, _ := r.api.snapshot()
-	if len(sends) != 1 || sends[0].chat != owner {
+	if len(sends) != 2 || sends[0].chat != owner {
 		t.Fatalf("sends = %+v", sends)
 	}
-	text := sends[0].text
-	for _, want := range []string{"Стокгольм", "поколение 7", "в порядке", "Ждут одобрения: 1"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("status lacks %q:\n%s", want, text)
+	main := sends[0]
+	for _, want := range []string{"Стокгольм  в порядке, 2 дня", "В сети     0 из 0", "Заявки     1 ждут"} {
+		if !strings.Contains(main.text, want) {
+			t.Errorf("main screen lacks %q:\n%s", want, main.text)
 		}
+	}
+	if fmt.Sprint(main.kb) != fmt.Sprint(telegram.Keyboard{
+		{btn("Устройства", "m:devices"), btn("Трафик", "tr:d")},
+		{btn("Сервер", "m:server"), btn("Заявки · 1", "m:requests")},
+	}) {
+		t.Errorf("main buttons = %+v", main.kb)
+	}
+	for _, want := range []string{"Стокгольм · Vultr, 7-й", "Состояние  в порядке", "Выход      напрямую"} {
+		if !strings.Contains(sends[1].text, want) {
+			t.Errorf("server screen lacks %q:\n%s", want, sends[1].text)
+		}
+	}
+	if strings.Contains(sends[1].text, "203.0.113.9") {
+		t.Error("an address on the server screen")
 	}
 }
 
@@ -326,9 +350,9 @@ func TestAListButtonRedrawsTheList(t *testing.T) {
 	r.ask(t, 1, 0x11, "one")
 	r.ask(t, 2, 0x22, "two")
 	r.bot.handle(context.Background(), press(owner, "dn:"+idOf(1)+":l"))
-	_, edits, _ := r.api.snapshot()
-	if len(edits) != 1 || !strings.Contains(edits[0].text, "Отказано: one") || !strings.Contains(edits[0].text, "Ждут одобрения (1)") {
-		t.Fatalf("edit = %+v", edits)
+	_, edits, answers := r.api.snapshot()
+	if len(edits) != 1 || !strings.Contains(edits[0].text, "Ждут одобрения (1)") || answers[0] != "Отказано: one." {
+		t.Fatalf("edit = %+v, notice %q", edits, answers)
 	}
 }
 
@@ -351,9 +375,12 @@ func TestRevokingAsksFirstAndThenCutsTheDeviceOff(t *testing.T) {
 	if got := r.ask(t, 1, 0x11, "phone"); got != proto.EnrollDenied {
 		t.Fatalf("a revoked device got %q", got)
 	}
-	_, edits, _ = r.api.snapshot()
-	if !strings.Contains(edits[1].text, "Доступ отозван: phone") {
-		t.Fatalf("edit = %q", edits[1].text)
+	_, edits, answers := r.api.snapshot()
+	if answers[len(answers)-1] != "Доступ отозван: phone." || !strings.HasPrefix(edits[1].text, "Устройств с доступом нет") {
+		t.Fatalf("after revoking: notice %q, screen %q", answers[len(answers)-1], edits[1].text)
+	}
+	if edits[0].kb[0][0].Style != telegram.StyleDanger || edits[0].kb[0][1].Data != "dv:"+idOf(1) {
+		t.Errorf("confirmation buttons = %+v", edits[0].kb)
 	}
 }
 
@@ -456,8 +483,8 @@ func TestStatusSaysWhoHostsItAndUntilWhenItIsPaid(t *testing.T) {
 	r := newRig(t)
 	r.mgr.snap.Provider, r.mgr.snap.Region, r.mgr.snap.Billing = "cherry", "sia", cloud.Monthly
 	r.mgr.snap.PaidUntil = r.now.Add(20 * 24 * time.Hour)
-	text := r.bot.statusView(context.Background()).text
-	if !strings.Contains(text, "Шяуляй · Cherry") || !strings.Contains(text, "Оплачен помесячно") {
+	text := r.bot.serverView().text
+	if !strings.Contains(text, "Шяуляй · Cherry") || !strings.Contains(text, "Оплачен    до ") {
 		t.Errorf("status = %q", text)
 	}
 }
@@ -585,11 +612,11 @@ func TestEveryButtonFitsTelegramsLimit(t *testing.T) {
 		r.ask(t, i, 0x10+i, strings.Repeat("Длинное имя устройства ", 3)[:32])
 	}
 	ctx := context.Background()
-	views := []view{r.bot.requestsView(ctx), r.bot.serviceView(), r.bot.regionView(), menuView()}
+	views := []view{r.bot.requestsView(ctx), r.bot.settingsView(), r.bot.serverView(), r.bot.regionView(), r.bot.mainView(ctx)}
 	if _, err := r.srv.Approve(idOf(1), r.now); err != nil {
 		t.Fatal(err)
 	}
-	views = append(views, r.bot.devicesView(ctx))
+	views = append(views, r.bot.devicesView(ctx, 0), r.bot.staleView(ctx, 0), r.bot.deviceView(ctx, idOf(1)))
 	r.mgr.snap.Provider = "cherry"
 	views = append(views, r.bot.paymentReminder(cloud.Account{NextPayment: r.now.Add(time.Hour)}))
 	for _, v := range views {
@@ -612,8 +639,8 @@ func TestEveryButtonFitsTelegramsLimit(t *testing.T) {
 func TestTheWayOutIsSwitchedOnlyAfterAskingAndTheMenuShowsWhatItWillBe(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()
-	if !strings.Contains(fmt.Sprint(r.bot.serviceView().kb), "Выход через WARP: выкл → включить") {
-		t.Fatalf("the menu does not offer WARP: %+v", r.bot.serviceView().kb)
+	if !strings.Contains(fmt.Sprint(r.bot.settingsView().kb), "{WARP px:on") {
+		t.Fatalf("the settings do not offer WARP: %+v", r.bot.settingsView().kb)
 	}
 	r.bot.handle(ctx, press(owner, "px:on"))
 	_, edits, _ := r.api.snapshot()
@@ -633,7 +660,7 @@ func TestTheWayOutIsSwitchedOnlyAfterAskingAndTheMenuShowsWhatItWillBe(t *testin
 		t.Fatalf("action = %+v", a)
 	}
 	_, edits, _ = r.api.snapshot()
-	if !strings.Contains(fmt.Sprint(edits[len(edits)-1].kb), "Выход через WARP: вкл → выключить") {
+	if !strings.Contains(fmt.Sprint(edits[len(edits)-1].kb), "{WARP px:off") {
 		t.Errorf("the menu still offers to switch it on: %+v", edits[len(edits)-1].kb)
 	}
 	if len(data) > 64 {
@@ -643,15 +670,15 @@ func TestTheWayOutIsSwitchedOnlyAfterAskingAndTheMenuShowsWhatItWillBe(t *testin
 
 func TestTheStatusSaysWhereTheTrafficLeavesFrom(t *testing.T) {
 	r := newRig(t)
-	if text := r.bot.statusView(context.Background()).text; !strings.Contains(text, "Выход в интернет: напрямую, с адреса сервера.") {
+	if text := r.bot.serverView().text; !strings.Contains(text, "Выход      напрямую") {
 		t.Errorf("status = %q", text)
 	}
 	r.mgr.set(func(s *lifecycle.Snapshot) {
 		s.ExitWant = egress.WARP
 		s.Exit = &egress.Status{Want: egress.WARP, State: egress.StateFallback, Since: r.now, Error: "dial tcp 172.16.0.2:0->1.1.1.1:443: i/o timeout"}
 	})
-	text := r.bot.statusView(context.Background()).text
-	if !strings.Contains(text, "WARP не отвечает с ") || !strings.Contains(text, "временно напрямую") {
+	text := r.bot.serverView().text
+	if !strings.Contains(text, "WARP упал, напрямую") {
 		t.Errorf("status = %q", text)
 	}
 	if strings.Contains(text, "172.16.0.2") || strings.Contains(text, "1.1.1.1") {

@@ -102,29 +102,6 @@ func periodStart(period string, now time.Time) time.Time {
 	return now.UTC().Truncate(time.Hour).Add(-23 * time.Hour)
 }
 
-// top writes the largest items, one a line, and the rest as one more.
-func top(items []usage.Item, name func(string) string, rest func(n int) string) string {
-	var out strings.Builder
-	var other uint64
-	others, shown := 0, 0
-	for _, it := range items {
-		if it.Total() == 0 {
-			continue
-		}
-		if shown < trafficTop && it.Key != usage.SiteOther {
-			fmt.Fprintf(&out, "\n%s — %s", name(it.Key), amount(it.Total()))
-			shown++
-			continue
-		}
-		other += it.Total()
-		others++
-	}
-	if other > 0 {
-		fmt.Fprintf(&out, "\n%s — %s", rest(others), amount(other))
-	}
-	return out.String()
-}
-
 func periodRow(prefix, suffix string) []telegram.Button {
 	return []telegram.Button{
 		btn("Сутки", prefix+"d"+suffix), btn("Неделя", prefix+"w"+suffix), btn("Месяц", prefix+"m"+suffix),
@@ -136,7 +113,7 @@ func periodRow(prefix, suffix string) []telegram.Button {
 func deviceLabel(id string, names map[string]node.DeviceLabel) string {
 	l, ok := names[id]
 	if !ok {
-		return "удалённое устройство"
+		return "удалённое"
 	}
 	same := 0
 	for _, o := range names {
@@ -160,32 +137,38 @@ func (b *Bot) trafficView(ctx context.Context, period string) view {
 	if r.Total.Total() == 0 {
 		return view{text: head + ": пока ничего.", kb: kb}
 	}
-	var out strings.Builder
-	fmt.Fprintf(&out, "%s: %s.\n", head, amount(r.Total.Total()))
-	out.WriteString(top(r.Sites, siteName, func(int) string { return "Остальное" }))
-	out.WriteString("\n")
-	out.WriteString(top(r.Devices, func(id string) string { return deviceLabel(id, r.Names) }, func(n int) string {
-		return fmt.Sprintf("Ещё %d %s", n, plural(n, "устройство", "устройства", "устройств"))
-	}))
+	sites := topRows(r.Sites, siteName, func(int) string { return "Остальное" })
+	devices := topRows(r.Devices, func(id string) string { return deviceLabel(id, r.Names) }, func(n int) string {
+		return fmt.Sprintf("Ещё %d", n)
+	})
+	block := columns(sites, 18, -7) + "\n\n" + columns(devices, 18, -7)
 	if r.Server.Up > 0 {
-		fmt.Fprintf(&out, "\n\nСервер отправил %s.", amount(r.Server.Up))
+		block += "\n\n" + columns([][]string{{"Сервер отправил", amount(r.Server.Up)}}, 18, -7)
 	}
-	return view{text: out.String(), kb: kb}
+	return view{text: fmt.Sprintf("%s: %s.\n", head, amount(r.Total.Total())) + telegram.Mono(block), kb: kb}
 }
 
-func (b *Bot) deviceTrafficView(ctx context.Context, period, id string) view {
-	kb := telegram.Keyboard{periodRow("td:", ":"+id), {btn("Весь трафик", "tr:"+periodKey(period))}}
-	r, err := b.usage(ctx, period, id)
-	if err != nil {
-		return view{text: "Учёт трафика сейчас не читается: " + firstLine(err.Error()), kb: kb}
+// topRows is the largest items as rows of a name and an amount, and the rest
+// as one more row.
+func topRows(items []usage.Item, name func(string) string, rest func(n int) string) [][]string {
+	var rows [][]string
+	var other uint64
+	others := 0
+	for _, it := range items {
+		if it.Total() == 0 {
+			continue
+		}
+		if len(rows) < trafficTop && it.Key != usage.SiteOther {
+			rows = append(rows, []string{name(it.Key), amount(it.Total())})
+			continue
+		}
+		other += it.Total()
+		others++
 	}
-	head := fmt.Sprintf("%s за %s%s", deviceLabel(id, r.Names), periodWords[period], b.since(r.Report))
-	if r.Total.Total() == 0 {
-		return view{text: head + ": ничего.", kb: kb}
+	if other > 0 {
+		rows = append(rows, []string{rest(others), amount(other)})
 	}
-	text := fmt.Sprintf("%s: %s.\n", head, amount(r.Total.Total())) +
-		top(r.Sites, siteName, func(int) string { return "Остальное" })
-	return view{text: text, kb: kb}
+	return rows
 }
 
 // heavyView is the notice about a device that used a lot in a day.
@@ -198,7 +181,7 @@ func heavyView(h lifecycle.HeavyUsage) view {
 	if h.Total > 0 {
 		text += fmt.Sprintf(", %d%% всего трафика", int(math.Round(float64(h.Bytes)*100/float64(h.Total))))
 	}
-	return view{text: text + ".", kb: telegram.Keyboard{{btn("Куда", "td:d:"+h.ID)}}}
+	return view{text: text + ".", kb: telegram.Keyboard{{btn("Куда", "dv:"+h.ID)}}}
 }
 
 // periodOf reads a period from button data; anything unknown is a day.

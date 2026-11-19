@@ -59,42 +59,6 @@ func left(d time.Duration) string {
 	return fmt.Sprintf("%d %s", n, plural(n, "день", "дня", "дней"))
 }
 
-// paymentLine is the status line about payment, or "" for a server paid by
-// the hour.
-func (b *Bot) paymentLine(s lifecycle.Snapshot) string {
-	a := s.Account
-	if a == nil || a.NextPayment.IsZero() {
-		if s.PaidUntil.IsZero() {
-			return ""
-		}
-		return fmt.Sprintf("Оплачен помесячно, до %s.", b.stamp(s.PaidUntil))
-	}
-	line := fmt.Sprintf("Оплачен до %s", b.stamp(a.NextPayment))
-	switch {
-	case lifecycle.ShortOfMoney(*a):
-		return line + fmt.Sprintf(", на балансе не хватает: %s из %s.", money(a.Balance, a.Currency), money(a.Price, a.Currency))
-	case !a.AutoRenew:
-		return line + ", продлевать вручную."
-	}
-	return line + ", продлится сам."
-}
-
-// trafficLine is the status line about the allowance, or "" when unknown.
-func (b *Bot) trafficLine(s lifecycle.Snapshot) string {
-	a := s.Account
-	if a == nil || a.TrafficLimit <= 0 {
-		return ""
-	}
-	if a.TrafficUsed >= a.TrafficLimit {
-		return "Трафик: лимит исчерпан, " + usedOf(*a) + "."
-	}
-	line := "Трафик: " + usedOf(*a)
-	if out := b.runsOut(*a, s.CreatedAt); out != "" {
-		return line + ", при таком темпе хватит до " + out + "."
-	}
-	return line + "."
-}
-
 // runsOut is the day the allowance runs out at the present pace, or "" when
 // it will not within the provider's thirty days.
 func (b *Bot) runsOut(a cloud.Account, created time.Time) string {

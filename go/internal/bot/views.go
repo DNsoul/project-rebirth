@@ -22,18 +22,7 @@ type view struct {
 
 func btn(text, data string) telegram.Button { return telegram.Button{Text: text, Data: data} }
 
-var backRow = []telegram.Button{btn("« Меню", "m:menu")}
-
-func menuView() view {
-	return view{
-		text: "Rebirth: управление сервером.",
-		kb: telegram.Keyboard{
-			{btn("Состояние", "m:status"), btn("Устройства", "m:devices")},
-			{btn("Трафик", "tr:d"), btn("Заявки", "m:requests")},
-			{btn("Обслуживание", "m:service")},
-		},
-	}
-}
+var backRow = []telegram.Button{btn("« Меню", "m:main")}
 
 var regionNames = map[string]string{
 	"sto": "Стокгольм",
@@ -136,65 +125,6 @@ func bytesWords(n int64) string {
 	return fmt.Sprintf("%d Б", n)
 }
 
-func (b *Bot) statusView(ctx context.Context) view {
-	s := b.Manager.Snapshot()
-	now := b.now()
-	var out strings.Builder
-	fmt.Fprintf(&out, "Сервер: %s · %s, поколение %d, работает %s.\n", regionName(s.Region), providerName(s.Provider), s.Generation, duration(now.Sub(s.CreatedAt)))
-	if line := b.paymentLine(s); line != "" {
-		out.WriteString(line + "\n")
-	}
-	if line := b.trafficLine(s); line != "" {
-		out.WriteString(line + "\n")
-	}
-	fmt.Fprintf(&out, "Состояние: %s.\n", healthWords(s.Health))
-	if s.Moving {
-		out.WriteString("Сейчас идёт переезд.\n")
-	}
-	if w := s.Watch; w != nil {
-		fmt.Fprintf(&out, "Связь с российскими сайтами: %s с %s.\n", watchWords(w.Round), b.stamp(time.Unix(w.Since, 0)))
-		if w.Stuck > 0 {
-			fmt.Fprintf(&out, "Стучатся и не могут войти: %d устр. Ответы сервера до них не доходят.\n", w.Stuck)
-		}
-	}
-	if o, err := b.overview(ctx); err == nil {
-		online := 0
-		for _, d := range o.Devices {
-			if d.Online {
-				online++
-			}
-		}
-		fmt.Fprintf(&out, "Устройства: %d в сети из %d.", online, len(o.Devices))
-		if n := len(o.Pending); n > 0 {
-			fmt.Fprintf(&out, " Ждут одобрения: %d.", n)
-		}
-		if o.Approval {
-			out.WriteString("\nНовые устройства ждут вашего одобрения.\n")
-		} else {
-			out.WriteString("\nОдобрение выключено: новые устройства входят сами.\n")
-		}
-	} else {
-		out.WriteString("Список устройств сейчас не читается.\n")
-	}
-	fmt.Fprintf(&out, "Автопереезд по возрасту: %s", onOff(s.AutoAge))
-	if !s.NextAutoMove.IsZero() {
-		fmt.Fprintf(&out, " (следующий около %s)", b.stamp(s.NextAutoMove))
-	}
-	fmt.Fprintf(&out, "; при блокировке: %s.\n", onOff(s.AutoBlock))
-	fmt.Fprintf(&out, "Выход в интернет: %s.\n", b.exitWords(s.ExitWant, s.Exit))
-	fmt.Fprintf(&out, "Сертификат действует ещё %d дн.\n", s.CertDaysLeft)
-	if m := s.LastMove; m != nil {
-		fmt.Fprintf(&out, "Последний переезд: %s, %s, итог: %s.", b.stamp(time.Unix(m.At, 0)), triggerWords(m.Trigger), m.State)
-		if m.Error != "" {
-			fmt.Fprintf(&out, "\nОшибка: %s", firstLine(m.Error))
-		}
-	}
-	return view{text: strings.TrimRight(out.String(), "\n"), kb: telegram.Keyboard{
-		{btn("Обновить", "m:status"), btn("Устройства", "m:devices")},
-		backRow,
-	}}
-}
-
 func watchWords(round string) string {
 	switch round {
 	case "good":
@@ -207,55 +137,12 @@ func watchWords(round string) string {
 	return round
 }
 
-func seen(d node.DeviceView, now time.Time) string {
-	switch {
-	case d.Online:
-		return "в сети"
-	case d.LastHandshake > 0:
-		return "был " + duration(now.Sub(time.Unix(d.LastHandshake, 0))) + " назад"
-	case d.LastSeen > d.EnrolledAt:
-		return "был " + duration(now.Sub(time.Unix(d.LastSeen, 0))) + " назад"
-	}
-	return "ещё не подключалось"
-}
-
 func deviceName(name string) string {
-	if strings.TrimSpace(name) == "" {
+	name = strings.TrimSpace(telegram.Clean(name))
+	if name == "" {
 		return "без имени"
 	}
 	return name
-}
-
-// short trims a name to fit on a button.
-func short(name string, n int) string {
-	r := []rune(deviceName(name))
-	if len(r) <= n {
-		return string(r)
-	}
-	return string(r[:n-1]) + "…"
-}
-
-func (b *Bot) devicesView(ctx context.Context) view {
-	o, err := b.overview(ctx)
-	if err != nil {
-		return view{text: "Список устройств сейчас не читается: " + err.Error(), kb: telegram.Keyboard{backRow}}
-	}
-	if len(o.Devices) == 0 {
-		return view{text: "Устройств с доступом нет.", kb: telegram.Keyboard{{btn("Заявки", "m:requests")}, backRow}}
-	}
-	now := b.now()
-	var out strings.Builder
-	fmt.Fprintf(&out, "Устройства с доступом (%d):\n", len(o.Devices))
-	var kb telegram.Keyboard
-	for i, d := range o.Devices {
-		fmt.Fprintf(&out, "\n%d. %s · код %s · %s", i+1, deviceName(d.Name), d.Code, seen(d, now))
-		if d.RxBytes+d.TxBytes > 0 {
-			fmt.Fprintf(&out, " · %s", bytesWords(d.RxBytes+d.TxBytes))
-		}
-		kb = append(kb, []telegram.Button{btn(fmt.Sprintf("Отозвать: %d. %s", i+1, short(d.Name, 20)), "rv:"+d.ID)})
-	}
-	kb = append(kb, []telegram.Button{btn("Обновить", "m:devices"), btn("Заявки", "m:requests")}, backRow)
-	return view{text: out.String(), kb: kb}
 }
 
 func (b *Bot) confirmRevoke(ctx context.Context, id string) view {
@@ -263,8 +150,13 @@ func (b *Bot) confirmRevoke(ctx context.Context, id string) view {
 	if err == nil {
 		for _, d := range o.Devices {
 			if d.ID == id {
-				return confirmView(fmt.Sprintf("Отозвать доступ у «%s» (код %s)? Устройство отключится сразу и больше не войдёт, пока вы не выдадите доступ снова.",
-					deviceName(d.Name), d.Code), "Да, отозвать", "rv!:"+id, "m:devices")
+				return view{
+					text: fmt.Sprintf("Отозвать доступ у %s (код %s)? Устройство отключится сразу и больше не войдёт.", shownName(d), d.Code),
+					kb: telegram.Keyboard{{
+						telegram.Button{Text: "Отозвать", Data: "rv!:" + id, Style: telegram.StyleDanger},
+						btn("Отмена", "dv:"+id),
+					}},
+				}
 			}
 		}
 	}
@@ -288,7 +180,7 @@ func (b *Bot) requestsView(ctx context.Context) view {
 				out.WriteString(" (уже было одобрено, ключ сменился)")
 			}
 			kb = append(kb, []telegram.Button{
-				btn(fmt.Sprintf("Одобрить %d", i+1), "ap:"+w.ID+":l"),
+				{Text: fmt.Sprintf("Одобрить %d", i+1), Data: "ap:" + w.ID + ":l", Style: telegram.StyleSuccess},
 				btn(fmt.Sprintf("Отказать %d", i+1), "dn:"+w.ID+":l"),
 			})
 		}
@@ -311,81 +203,25 @@ func (b *Bot) requestsView(ctx context.Context) view {
 	return view{text: out.String(), kb: kb}
 }
 
-func (b *Bot) serviceView() view { return b.serviceViewWith(nil, nil, nil) }
-
-// serviceViewWith draws the maintenance menu, with the switches as given when
-// they have just been changed.
-func (b *Bot) serviceViewWith(age, block *bool, exit *egress.Mode) view {
-	s := b.Manager.Snapshot()
-	autoAge, autoBlock, exitWant := s.AutoAge, s.AutoBlock, s.ExitWant
-	if age != nil {
-		autoAge = *age
-	}
-	if block != nil {
-		autoBlock = *block
-	}
-	if exit != nil {
-		exitWant = *exit
-	}
-	toggle := func(label string, on bool, op string) telegram.Button {
-		if on {
-			return btn(label+": вкл → выключить", op+":off")
-		}
-		return btn(label+": выкл → включить", op+":on")
-	}
-	text := "Обслуживание."
-	if s.Moving {
-		text += "\nСейчас идёт переезд."
-	}
-	return view{text: text, kb: telegram.Keyboard{
-		{btn("Переехать сейчас", "mv"), btn("Переехать в регион…", "mr")},
-		{btn("Перезапустить туннель", "rs")},
-		{toggle("Автопереезд по возрасту", autoAge, "pa")},
-		{toggle("Переезд при блокировке", autoBlock, "pb")},
-		{toggle("Выход через WARP", exitWant == egress.WARP, "px")},
-		{btn("Проверить доступность из России", "ck")},
-		backRow,
-	}}
-}
-
 // confirmExit asks before the way out is switched: every open connection on
 // every device breaks once.
 func confirmExit(on bool) view {
 	if on {
 		return confirmView("Выпускать трафик устройств через Cloudflare WARP? Сайты и приложения увидят адрес Cloudflare, а не адрес сервера. "+
 			"Открытые соединения оборвутся и через несколько секунд восстановятся сами.",
-			"Да, включить", "px!:on:"+nonce(), "m:service")
+			"Да, включить", "px!:on:"+nonce(), "m:settings")
 	}
 	return confirmView("Выпускать трафик устройств напрямую, с адреса сервера? "+
 		"Открытые соединения оборвутся и через несколько секунд восстановятся сами.",
-		"Да, выключить", "px!:off:"+nonce(), "m:service")
-}
-
-// exitWords says where the devices' traffic leaves from.
-func (b *Bot) exitWords(want egress.Mode, st *egress.Status) string {
-	if want != egress.WARP {
-		if st != nil && st.State != egress.StateDirect {
-			return "переключаю на прямой, с адреса сервера"
-		}
-		return "напрямую, с адреса сервера"
-	}
-	if st == nil {
-		return "просили через WARP, но сервер не сообщает, как идут дела"
-	}
-	switch st.State {
-	case egress.StateWARP:
-		return "через WARP, сайты видят адрес Cloudflare"
-	case egress.StateFallback:
-		return fmt.Sprintf("WARP не отвечает с %s, временно напрямую", b.stamp(st.Since))
-	}
-	return "включаю WARP"
+		"Да, выключить", "px!:off:"+nonce(), "m:settings")
 }
 
 func (b *Bot) regionView() view {
 	s := b.Manager.Snapshot()
 	id := nonce()
 	var row []telegram.Button
-	var kb telegram.Keyboard
+	// Anywhere is the usual choice: an hourly place picked by the manager.
+	kb := telegram.Keyboard{{btn("Куда угодно", "mv")}}
 	for _, p := range s.Places {
 		if pl := p.Place(); pl.Provider == s.Provider && pl.Location == s.Region {
 			continue
@@ -404,7 +240,7 @@ func (b *Bot) regionView() view {
 	if len(row) > 0 {
 		kb = append(kb, row)
 	}
-	kb = append(kb, []telegram.Button{btn("Отмена", "m:service")})
+	kb = append(kb, []telegram.Button{btn("Отмена", "m:server")})
 	return view{text: fmt.Sprintf("Куда переехать? Сейчас: %s · %s.", regionName(s.Region), providerName(s.Provider)), kb: kb}
 }
 
@@ -433,7 +269,10 @@ func requestText(w node.WaitingView) string {
 }
 
 func requestKeyboard(w node.WaitingView) telegram.Keyboard {
-	return telegram.Keyboard{{btn("Одобрить", "ap:"+w.ID), btn("Отказать", "dn:"+w.ID)}}
+	return telegram.Keyboard{{
+		telegram.Button{Text: "Одобрить", Data: "ap:" + w.ID, Style: telegram.StyleSuccess},
+		btn("Отказать", "dn:"+w.ID),
+	}}
 }
 
 // decisionText says how a decision about a device came out.

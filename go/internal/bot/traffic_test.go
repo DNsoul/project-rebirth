@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"awgrotator/internal/lifecycle"
 	"awgrotator/internal/node"
+	"awgrotator/internal/telegram"
 	"awgrotator/internal/usage"
 )
 
@@ -54,31 +56,40 @@ func TestTheTrafficScreenListsTheLargestSitesAndDevices(t *testing.T) {
 	store.AddServer(at, usage.Bytes{Down: 190e9, Up: 192e9})
 
 	v := r.bot.trafficView(ctx, usage.Day)
+	line := func(name, amount string) string {
+		return strings.TrimRight(fmt.Sprintf("%-18s %7s", name, amount), " ")
+	}
 	want := "Трафик за сутки (учёт с " + time.Unix(at.UTC().Truncate(time.Hour).Unix(), 0).In(tomsk).Format("02.01 15:04") + "): 183 ГБ.\n" +
-		"\nYouTube — 121 ГБ" +
-		"\nSteam — 42 ГБ" +
-		"\nTwitch — 12 ГБ" +
-		"\nTelegram — 6,0 ГБ" +
-		"\nexample.com — 1,5 ГБ" +
-		"\nОстальное — 700 МБ" +
-		"\n" +
-		"\nwindows · " + r.bot.mustCode(t, 1) + " — 162 ГБ" +
-		"\nwindows · " + r.bot.mustCode(t, 2) + " — 12 ГБ" +
-		"\nphone — 8,2 ГБ" +
-		"\nудалённое устройство — 1,0 ГБ" +
-		"\n\nСервер отправил 192 ГБ."
+		telegram.Mono(strings.Join([]string{
+			line("YouTube", "121 ГБ"),
+			line("Steam", "42 ГБ"),
+			line("Twitch", "12 ГБ"),
+			line("Telegram", "6,0 ГБ"),
+			line("example.com", "1,5 ГБ"),
+			line("Остальное", "700 МБ"),
+			"",
+			line("windows · "+r.bot.mustCode(t, 1), "162 ГБ"),
+			line("windows · "+r.bot.mustCode(t, 2), "12 ГБ"),
+			line("phone", "8,2 ГБ"),
+			line("удалённое", "1,0 ГБ"),
+			"",
+			line("Сервер отправил", "192 ГБ"),
+		}, "\n"))
 	if v.text != want {
 		t.Errorf("traffic:\n%s\nwant\n%s", v.text, want)
 	}
-	if len(v.kb) != 2 || v.kb[0][1].Data != "tr:w" || v.kb[1][0].Data != "m:menu" {
+	if len(v.kb) != 2 || v.kb[0][1].Data != "tr:w" || v.kb[1][0].Data != "m:main" {
 		t.Errorf("buttons = %+v", v.kb)
 	}
 
-	one := r.bot.deviceTrafficView(ctx, usage.Week, idOf(1))
-	if !strings.HasPrefix(one.text, "windows · "+r.bot.mustCode(t, 1)+" за неделю") || !strings.Contains(one.text, "\nYouTube — 120 ГБ\nSteam — 42 ГБ") {
-		t.Errorf("one device:\n%s", one.text)
+	card := r.bot.deviceView(ctx, idOf(1))
+	for _, want := range []string{"windows\n", "Код          " + r.bot.mustCode(t, 1), "Сутки        162 ГБ", "Месяц        162 ГБ",
+		line("YouTube", "120 ГБ")[:0] + "YouTube           120 ГБ", "Steam              42 ГБ"} {
+		if !strings.Contains(card.text, want) {
+			t.Errorf("card lacks %q:\n%s", want, card.text)
+		}
 	}
-	for _, row := range append(v.kb, one.kb...) {
+	for _, row := range append(v.kb, card.kb...) {
 		for _, b := range row {
 			if len(b.Data) > 64 || b.Data == "" {
 				t.Errorf("button %q data %q", b.Text, b.Data)
@@ -110,17 +121,17 @@ func TestTrafficButtonsRedrawTheScreenForThePeriod(t *testing.T) {
 	r.bot.handle(ctx, press(owner, "td:m:"+idOf(3)))
 	r.bot.handle(ctx, message(owner, "private", "/traffic"))
 	_, edits, _ := r.api.snapshot()
-	if len(edits) != 2 || !strings.HasPrefix(edits[0].text, "Трафик за неделю") || !strings.Contains(edits[0].text, "YouTube — 5,0 ГБ") {
+	if len(edits) != 2 || !strings.HasPrefix(edits[0].text, "Трафик за неделю") || !strings.Contains(edits[0].text, "YouTube") {
 		t.Fatalf("edits = %+v", edits)
 	}
-	if !strings.HasPrefix(edits[1].text, "phone за месяц") {
-		t.Errorf("device: %q", edits[1].text)
+	if !strings.HasPrefix(edits[1].text, "phone\n") {
+		t.Errorf("an old \"Куда\" button does not open the card: %q", edits[1].text)
 	}
 	if sends, _, _ := r.api.snapshot(); len(sends) != 1 || !strings.HasPrefix(sends[0].text, "Трафик за сутки") {
 		t.Errorf("/traffic: %+v", sends)
 	}
-	if m := menuView(); m.kb[1][0].Data != "tr:d" {
-		t.Errorf("the menu has no traffic button: %+v", m.kb)
+	if m := r.bot.mainView(ctx); m.kb[0][1].Data != "tr:d" {
+		t.Errorf("the main screen has no traffic button: %+v", m.kb)
 	}
 }
 
@@ -132,7 +143,7 @@ func TestADeviceThatUsesALotIsNamedWithItsShareAndAButton(t *testing.T) {
 	if v.text != "DESKTOP-UE0P2DK (код 0235) за сутки: 184 ГБ, 96% всего трафика." {
 		t.Errorf("text = %q", v.text)
 	}
-	if len(v.kb) != 1 || v.kb[0][0].Data != "td:d:"+idOf(1) || len(v.kb[0][0].Data) > 64 {
+	if len(v.kb) != 1 || v.kb[0][0].Data != "dv:"+idOf(1) || len(v.kb[0][0].Data) > 64 {
 		t.Errorf("buttons = %+v", v.kb)
 	}
 }

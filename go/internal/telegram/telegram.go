@@ -16,7 +16,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
+	"unicode/utf16"
 )
 
 // DefaultBase is the Bot API.
@@ -68,6 +70,9 @@ type Message struct {
 	Chat      Chat   `json:"chat"`
 	Date      int64  `json:"date"`
 	Text      string `json:"text,omitempty"`
+
+	// ReplyTo is the message this one answers, when it is a reply.
+	ReplyTo *Message `json:"reply_to_message,omitempty"`
 }
 
 // CallbackQuery is a press of a button under a message.
@@ -92,7 +97,17 @@ type Button struct {
 	Text string `json:"text"`
 	Data string `json:"callback_data,omitempty"`
 	URL  string `json:"url,omitempty"`
+
+	// Style colours the button: StyleDanger or StyleSuccess. Older apps
+	// ignore it.
+	Style string `json:"style,omitempty"`
 }
+
+// Button colours.
+const (
+	StyleDanger  = "danger"
+	StyleSuccess = "success"
+)
 
 // Keyboard is rows of buttons.
 type Keyboard [][]Button
@@ -217,11 +232,69 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, wait time.Duratio
 }
 
 type sendParams struct {
-	ChatID      int64           `json:"chat_id"`
-	MessageID   int64           `json:"message_id,omitempty"`
-	Text        string          `json:"text"`
-	ReplyMarkup *inlineKeyboard `json:"reply_markup,omitempty"`
-	NoPreview   *linkPreview    `json:"link_preview_options,omitempty"`
+	ChatID      int64        `json:"chat_id"`
+	MessageID   int64        `json:"message_id,omitempty"`
+	Text        string       `json:"text"`
+	Entities    []entity     `json:"entities,omitempty"`
+	ReplyMarkup any          `json:"reply_markup,omitempty"`
+	NoPreview   *linkPreview `json:"link_preview_options,omitempty"`
+}
+
+// entity marks a span of a message's text; only monospace blocks are used.
+type entity struct {
+	Type   string `json:"type"`
+	Offset int    `json:"offset"`
+	Length int    `json:"length"`
+}
+
+// Monospace blocks are marked in the text with two characters from Unicode's
+// private use area, which no device name or message can contain once they
+// pass through Clean. Send and Edit turn each marked span into a "pre" entity
+// and drop the marks, so the text itself still carries no markup at all.
+const (
+	monoOpen  = '\uE000'
+	monoClose = '\uE001'
+)
+
+// Mono marks s to be shown in a monospace block.
+func Mono(s string) string { return string(monoOpen) + s + string(monoClose) }
+
+// Clean removes from s what could be taken for a mark or a control
+// character: names that come from devices go through it.
+func Clean(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == monoOpen || r == monoClose || (r < 0x20 && r != '\n') || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// entitiesOf strips the marks from text and returns where the blocks are,
+// counted in UTF-16 units as Telegram counts them.
+func entitiesOf(text string) (string, []entity) {
+	if !strings.ContainsRune(text, monoOpen) {
+		return text, nil
+	}
+	var out strings.Builder
+	var ents []entity
+	pos, start := 0, -1
+	for _, r := range text {
+		switch {
+		case r == monoOpen && start < 0:
+			start = pos
+		case r == monoClose && start >= 0:
+			if pos > start {
+				ents = append(ents, entity{Type: "pre", Offset: start, Length: pos - start})
+			}
+			start = -1
+		case r == monoOpen || r == monoClose:
+		default:
+			out.WriteRune(r)
+			pos += utf16.RuneLen(r)
+		}
+	}
+	return out.String(), ents
 }
 
 type inlineKeyboard struct {
@@ -243,15 +316,31 @@ func markup(kb Keyboard) *inlineKeyboard {
 // the text on purpose: device names come from the devices themselves.
 func (c *Client) Send(ctx context.Context, chatID int64, text string, kb Keyboard) (Message, error) {
 	var m Message
+	text, ents := entitiesOf(text)
+	p := sendParams{ChatID: chatID, Text: text, Entities: ents, NoPreview: &linkPreview{IsDisabled: true}}
+	if kb != nil {
+		p.ReplyMarkup = markup(kb)
+	}
+	err := c.call(ctx, "sendMessage", p, &m)
+	return m, err
+}
+
+// Ask sends a question the person answers by replying: their app opens the
+// reply field at once, with placeholder as a hint.
+func (c *Client) Ask(ctx context.Context, chatID int64, text, placeholder string) (Message, error) {
+	var m Message
+	text, ents := entitiesOf(text)
 	err := c.call(ctx, "sendMessage", sendParams{
-		ChatID: chatID, Text: text, ReplyMarkup: markup(kb), NoPreview: &linkPreview{IsDisabled: true},
+		ChatID: chatID, Text: text, Entities: ents, NoPreview: &linkPreview{IsDisabled: true},
+		ReplyMarkup: map[string]any{"force_reply": true, "input_field_placeholder": placeholder},
 	}, &m)
 	return m, err
 }
 
 // Edit replaces a message's text and buttons. A nil kb removes the buttons.
 func (c *Client) Edit(ctx context.Context, chatID, messageID int64, text string, kb Keyboard) error {
-	p := sendParams{ChatID: chatID, MessageID: messageID, Text: text, NoPreview: &linkPreview{IsDisabled: true}}
+	text, ents := entitiesOf(text)
+	p := sendParams{ChatID: chatID, MessageID: messageID, Text: text, Entities: ents, NoPreview: &linkPreview{IsDisabled: true}}
 	if kb == nil {
 		kb = Keyboard{}
 	}

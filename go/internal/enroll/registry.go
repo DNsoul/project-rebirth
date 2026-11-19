@@ -16,8 +16,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"awgrotator/internal/proto"
 )
@@ -87,6 +90,10 @@ type Device struct {
 
 	Name       string `json:"name,omitempty"`
 	EnrolledAt int64  `json:"enrolled_at"`
+
+	// Label is the name the operator gave the device, shown instead of the one
+	// its app sends. It stays when the device registers again.
+	Label string `json:"label,omitempty"`
 
 	// LastSeen is when the device last completed a handshake, or when it
 	// enrolled if it has not yet.
@@ -385,6 +392,36 @@ func (r *Registry) Commit(p Plan) error {
 	return nil
 }
 
+// MaxLabel is the longest name the operator may give a device, in characters.
+const MaxLabel = 32
+
+// SetLabel gives a device the operator's name for it; an empty label goes
+// back to the name its app sends. It saves at once.
+func (r *Registry) SetLabel(id, label string) (Device, error) {
+	label = strings.TrimSpace(label)
+	if utf8.RuneCountInString(label) > MaxLabel {
+		return Device{}, fmt.Errorf("the name is longer than %d characters", MaxLabel)
+	}
+	if strings.IndexFunc(label, unicode.IsControl) >= 0 {
+		return Device{}, errors.New("the name has control characters in it")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.devices {
+		if r.devices[i].ID != id {
+			continue
+		}
+		before := r.devices[i].Label
+		r.devices[i].Label = label
+		if err := r.saveLocked(); err != nil {
+			r.devices[i].Label = before
+			return Device{}, err
+		}
+		return r.devices[i], nil
+	}
+	return Device{}, ErrUnknownDevice
+}
+
 // Touch records that the device with this key has just been seen. It only marks
 // the registry as needing a save; Flush writes it.
 func (r *Registry) Touch(publicKey string, t time.Time) {
@@ -425,4 +462,13 @@ func (r *Registry) saveLocked() error {
 	}
 	r.dirty = false
 	return nil
+}
+
+// Shown is the name the operator sees: their own label, or else the one the
+// device's app sends.
+func (d Device) Shown() string {
+	if d.Label != "" {
+		return d.Label
+	}
+	return d.Name
 }

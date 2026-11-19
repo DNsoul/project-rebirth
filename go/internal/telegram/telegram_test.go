@@ -135,3 +135,57 @@ func TestNameShowsWhoItIs(t *testing.T) {
 		t.Errorf("name %q", got)
 	}
 }
+
+func TestMonospaceBlocksBecomeEntitiesCountedInUTF16(t *testing.T) {
+	text, ents := entitiesOf("Устройства 😀\n" + Mono("1 windows  в сети\n2 Ünïcode 😀") + "\nконец")
+	if text != "Устройства 😀\n1 windows  в сети\n2 Ünïcode 😀\nконец" {
+		t.Fatalf("text = %q", text)
+	}
+	// "Устройства 😀\n" is 11 letters and a space, a surrogate pair, a newline.
+	if len(ents) != 1 || ents[0] != (entity{Type: "pre", Offset: 14, Length: 30}) {
+		t.Errorf("entities = %+v", ents)
+	}
+	if plain, ents := entitiesOf("no blocks"); plain != "no blocks" || ents != nil {
+		t.Errorf("plain = %q %+v", plain, ents)
+	}
+	if got := Clean("bad\uE000name\uE001\x07\nok"); got != "badname\nok" {
+		t.Errorf("Clean = %q", got)
+	}
+}
+
+func TestBlocksStylesAndQuestionsGoOutAsTelegramWantsThem(t *testing.T) {
+	var got map[string]any
+	c := server(t, func(method string, body map[string]any) (int, string) {
+		got = body
+		return 200, `{"ok":true,"result":{"message_id":7,"chat":{"id":42,"type":"private"},"date":1}}`
+	})
+	ctx := context.Background()
+	if _, err := c.Send(ctx, 42, "head\n"+Mono("a  b"), Keyboard{{{Text: "Отозвать", Data: "x", Style: StyleDanger}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got["text"] != "head\na  b" {
+		t.Errorf("text = %q", got["text"])
+	}
+	ents, _ := got["entities"].([]any)
+	if len(ents) != 1 || ents[0].(map[string]any)["type"] != "pre" || ents[0].(map[string]any)["offset"] != float64(5) {
+		t.Errorf("entities = %v", got["entities"])
+	}
+	btn := got["reply_markup"].(map[string]any)["inline_keyboard"].([]any)[0].([]any)[0].(map[string]any)
+	if btn["style"] != "danger" {
+		t.Errorf("button = %v", btn)
+	}
+
+	if _, err := c.Send(ctx, 42, "no buttons", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := got["reply_markup"]; has {
+		t.Errorf("a message without buttons carried reply_markup: %v", got["reply_markup"])
+	}
+
+	if _, err := c.Ask(ctx, 42, "Как назвать?", "Новое имя"); err != nil {
+		t.Fatal(err)
+	}
+	if rm := got["reply_markup"].(map[string]any); rm["force_reply"] != true || rm["input_field_placeholder"] != "Новое имя" {
+		t.Errorf("question markup = %v", rm)
+	}
+}

@@ -1,6 +1,7 @@
 package enroll
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -249,5 +250,31 @@ func TestACommitThatCannotBeSavedChangesNothing(t *testing.T) {
 	}
 	if r.Len() != 1 {
 		t.Errorf("%d devices after a failed commit, want 1", r.Len())
+	}
+}
+
+func TestTheOperatorsNameForADeviceSurvivesItRegisteringAgainAndARestart(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	path := filepath.Join(t.TempDir(), "r.json")
+	r := NewRegistry(path, testPool(t), Options{})
+	enrollOK(t, r, request(1, 1, "windows", now), now)
+	id := b64(1, proto.DeviceIDSize)
+	if d, err := r.SetLabel(id, "Ноутбук Пети"); err != nil || d.Shown() != "Ноутбук Пети" {
+		t.Fatalf("SetLabel = %+v, %v", d, err)
+	}
+	// The app comes back with a new key and its own name.
+	again := enrollOK(t, r, request(1, 7, "DESKTOP-NEW", now.Add(time.Hour)), now.Add(time.Hour))
+	if again.Label != "Ноутбук Пети" || again.Name != "DESKTOP-NEW" {
+		t.Errorf("after registering again: %+v", again)
+	}
+	loaded, err := LoadRegistry(path, testPool(t), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := loaded.Lookup(id); d.Label != "Ноутбук Пети" {
+		t.Errorf("after a restart: %+v", d)
+	}
+	if _, err := r.SetLabel(b64(9, proto.DeviceIDSize), "x"); !errors.Is(err, ErrUnknownDevice) {
+		t.Errorf("unknown device: %v", err)
 	}
 }

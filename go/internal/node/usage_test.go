@@ -2,6 +2,7 @@ package node
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"awgrotator/internal/proto"
@@ -49,5 +50,44 @@ func TestTheTrafficReportNamesDevicesAndRefusesWithoutAHistory(t *testing.T) {
 	}
 	if bad := ctl.Handle(ControlRequest{Op: OpUsage, Period: "year"}); bad.OK {
 		t.Error("an unknown period was accepted")
+	}
+}
+
+func TestTheOperatorCanNameADeviceAndTheNameIsUsedEverywhere(t *testing.T) {
+	ctl, srv, now := controlRig(t)
+	id := proto.Encode(fill(1, proto.DeviceIDSize))
+	if resp := ctl.Handle(ControlRequest{Op: OpApprove, ID: id}); !resp.OK {
+		t.Fatalf("approve: %+v", resp)
+	}
+	resp := ctl.Handle(ControlRequest{Op: OpRename, ID: id, Label: "  Ноутбук Пети "})
+	if !resp.OK || resp.Name != "Ноутбук Пети" {
+		t.Fatalf("rename: %+v", resp)
+	}
+	o := ctl.Handle(ControlRequest{Op: OpOverview}).Overview
+	if d := o.Devices[0]; d.Label != "Ноутбук Пети" || d.Name != "Xiaomi Redmi Note 12" || d.Shown() != "Ноутбук Пети" {
+		t.Errorf("device = %+v", d.Device)
+	}
+	store, _ := usage.Open(filepath.Join(t.TempDir(), "usage.json"))
+	store.Add(*now, []usage.Record{{Device: id, Site: "YouTube", Bytes: usage.Bytes{Down: 1}}})
+	ctl.Usage = store
+	if u := ctl.Handle(ControlRequest{Op: OpUsage, Period: usage.Day}).Usage; u.Names[id].Name != "Ноутбук Пети" {
+		t.Errorf("traffic report names it %q", u.Names[id].Name)
+	}
+
+	// The name stays in the saved list.
+	if d, ok := srv.Registry.Lookup(id); !ok || d.Label != "Ноутбук Пети" {
+		t.Errorf("registry = %+v", d)
+	}
+
+	for _, bad := range []string{strings.Repeat("я", 33), "bad\x07name"} {
+		if r := ctl.Handle(ControlRequest{Op: OpRename, ID: id, Label: bad}); r.OK {
+			t.Errorf("%q was taken", bad)
+		}
+	}
+	if r := ctl.Handle(ControlRequest{Op: OpRename, ID: "nobody", Label: "x"}); r.OK || !r.Missing {
+		t.Errorf("unknown device: %+v", r)
+	}
+	if r := ctl.Handle(ControlRequest{Op: OpRename, ID: id, Label: ""}); !r.OK || r.Name != "Xiaomi Redmi Note 12" {
+		t.Errorf("clearing the name: %+v", r)
 	}
 }

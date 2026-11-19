@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,7 @@ type API interface {
 	Send(ctx context.Context, chatID int64, text string, kb telegram.Keyboard) (telegram.Message, error)
 	Edit(ctx context.Context, chatID, messageID int64, text string, kb telegram.Keyboard) error
 	Answer(ctx context.Context, callbackID, text string) error
+	Ask(ctx context.Context, chatID int64, text, placeholder string) (telegram.Message, error)
 	SetCommands(ctx context.Context, cmds []telegram.Command) error
 }
 
@@ -89,6 +91,10 @@ type Bot struct {
 	ctx         context.Context
 	offset      int64
 	commandsSet bool
+
+	// renames are the questions for a device's new name still unanswered, by
+	// the message that asked, with the device each is about.
+	renames map[int64]string
 }
 
 // Defaults for the timings.
@@ -284,6 +290,9 @@ func (b *Bot) handle(ctx context.Context, u telegram.Update) {
 		if m.From == nil || !b.isOwner(m.From.ID) || m.Chat.Type != "private" {
 			return
 		}
+		if b.renamed(ctx, m) {
+			return
+		}
 		b.command(ctx, m.Chat.ID, strings.TrimSpace(m.Text))
 	case u.CallbackQuery != nil:
 		q := u.CallbackQuery
@@ -295,11 +304,12 @@ func (b *Bot) handle(ctx context.Context, u telegram.Update) {
 }
 
 var menuCommands = []telegram.Command{
-	{Command: "status", Description: "Состояние сервера"},
-	{Command: "devices", Description: "Устройства с доступом"},
-	{Command: "traffic", Description: "Куда уходит трафик"},
+	{Command: "start", Description: "Главная"},
+	{Command: "devices", Description: "Устройства"},
+	{Command: "traffic", Description: "Трафик"},
+	{Command: "status", Description: "Сервер"},
 	{Command: "requests", Description: "Заявки и отказы"},
-	{Command: "service", Description: "Обслуживание: переезд, перезапуск, автопереезды"},
+	{Command: "service", Description: "Настройки"},
 }
 
 // command answers a typed message with a new message.
@@ -309,17 +319,17 @@ func (b *Bot) command(ctx context.Context, chat int64, text string) {
 	var out view
 	switch cmd {
 	case "/status":
-		out = b.statusView(ctx)
+		out = b.serverView()
 	case "/devices":
-		out = b.devicesView(ctx)
+		out = b.devicesView(ctx, 0)
 	case "/traffic":
 		out = b.trafficView(ctx, usage.Day)
 	case "/requests":
 		out = b.requestsView(ctx)
 	case "/service":
-		out = b.serviceView()
+		out = b.settingsView()
 	default:
-		out = menuView()
+		out = b.mainView(ctx)
 	}
 	b.reply(ctx, chat, out)
 }
@@ -363,17 +373,28 @@ func (b *Bot) press(ctx context.Context, q *telegram.CallbackQuery) {
 	switch op {
 	case "m":
 		switch arg {
-		case "status":
-			edit(b.statusView(ctx))
+		case "server", "status":
+			edit(b.serverView())
 		case "devices":
-			edit(b.devicesView(ctx))
+			edit(b.devicesView(ctx, 0))
 		case "requests":
 			edit(b.requestsView(ctx))
-		case "service":
-			edit(b.serviceView())
+		case "settings", "service":
+			edit(b.settingsView())
 		default:
-			edit(menuView())
+			edit(b.mainView(ctx))
 		}
+
+	case "dl":
+		n, _ := strconv.Atoi(arg)
+		edit(b.devicesView(ctx, n))
+	case "ds":
+		n, _ := strconv.Atoi(arg)
+		edit(b.staleView(ctx, n))
+	case "dv":
+		edit(b.deviceView(ctx, arg))
+	case "nm":
+		notice = b.renamePrompt(ctx, chat, arg)
 
 	case "ap", "dn", "rv!", "al", "fg":
 		if b.Manager.Snapshot().Moving {
@@ -388,24 +409,27 @@ func (b *Bot) press(ctx context.Context, q *telegram.CallbackQuery) {
 		resp, err := b.Devices.Control(ctx, node.ControlRequest{Op: ops[op], ID: id})
 		text := decisionText(op, resp, err)
 		notice = text
-		if (op == "ap" || op == "dn") && from != "l" {
+		switch {
+		case (op == "ap" || op == "dn") && from != "l":
 			edit(view{text: text})
-		} else {
-			edit(b.devicesOrRequests(ctx, op, text))
+		case op == "rv!":
+			edit(b.devicesView(ctx, 0))
+		default:
+			edit(b.requestsView(ctx))
 		}
 
 	case "tr":
 		edit(b.trafficView(ctx, periodOf(arg)))
-	case "td":
-		p, id, _ := strings.Cut(arg, ":")
-		edit(b.deviceTrafficView(ctx, periodOf(p), id))
+	case "td": // a "Куда" button from before the device cards
+		_, id, _ := strings.Cut(arg, ":")
+		edit(b.deviceView(ctx, id))
 
 	case "rv":
 		edit(b.confirmRevoke(ctx, arg))
 
 	case "mv":
 		edit(confirmView("Переехать на новый сервер сейчас? Приложения переключатся сами, связь пропадёт на несколько секунд.",
-			"Да, переехать", "mv!:"+nonce(), "m:service"))
+			"Да, переехать", "mv!:"+nonce(), "m:server"))
 	case "mr":
 		edit(b.regionView())
 	case "mp":
@@ -414,14 +438,14 @@ func (b *Bot) press(ctx context.Context, q *telegram.CallbackQuery) {
 		id, region, _ := strings.Cut(arg, ":")
 		notice = b.act(chat, lifecycle.Action{Kind: lifecycle.ActMove, ID: id, Region: region},
 			"Переезд начнётся в течение минуты. О ходе напишу.")
-		edit(b.serviceView())
+		edit(b.serverView())
 
 	case "rs":
 		edit(confirmView("Перезапустить туннель? У всех пропадёт связь на несколько секунд.",
-			"Да, перезапустить", "rs!:"+nonce(), "m:service"))
+			"Да, перезапустить", "rs!:"+nonce(), "m:server"))
 	case "rs!":
 		notice = b.act(chat, lifecycle.Action{Kind: lifecycle.ActRestartNode, ID: arg}, "")
-		edit(b.serviceView())
+		edit(b.serverView())
 
 	case "pa", "pb":
 		on := arg == "on"
@@ -434,7 +458,7 @@ func (b *Bot) press(ctx context.Context, q *telegram.CallbackQuery) {
 		notice = b.act(chat, a, "")
 		// The manager applies it a moment later; the menu is drawn from the
 		// change itself, so it does not show the state from before.
-		edit(b.serviceViewWith(a.AutoAge, a.AutoBlock, nil))
+		edit(b.settingsViewWith(a.AutoAge, a.AutoBlock, nil))
 
 	case "px":
 		edit(confirmExit(arg == "on"))
@@ -447,7 +471,7 @@ func (b *Bot) press(ctx context.Context, q *telegram.CallbackQuery) {
 		}
 		notice = b.act(chat, lifecycle.Action{Kind: lifecycle.ActPolicy, ID: id, Exit: &mode},
 			"Принято. Выход переключится в течение минуты, напишу, когда получится.")
-		edit(b.serviceViewWith(nil, nil, &mode))
+		edit(b.settingsViewWith(nil, nil, &mode))
 
 	case "ck":
 		notice = b.act(chat, lifecycle.Action{Kind: lifecycle.ActCheck}, "Проверяю, это займёт до минуты…")
@@ -476,17 +500,6 @@ func (b *Bot) act(chat int64, a lifecycle.Action, accepted string) string {
 		return "Принято."
 	}
 	return accepted
-}
-
-func (b *Bot) devicesOrRequests(ctx context.Context, op, said string) view {
-	var v view
-	if op == "rv!" {
-		v = b.devicesView(ctx)
-	} else {
-		v = b.requestsView(ctx)
-	}
-	v.text = said + "\n\n" + v.text
-	return v
 }
 
 func (b *Bot) overview(ctx context.Context) (*node.ControlOverview, error) {

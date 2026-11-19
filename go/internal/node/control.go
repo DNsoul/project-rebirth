@@ -39,7 +39,8 @@ const (
 	OpAllow    = "allow"
 	OpForget   = "forget"
 	OpNotified = "notified"
-	OpUsage    = "usage" // where the traffic went over Period, for ID or for everyone
+	OpUsage    = "usage"  // where the traffic went over Period, for ID or for everyone
+	OpRename   = "rename" // give device ID the operator's Label; empty goes back to its own name
 )
 
 // ControlRequest is one question or decision. ID is a device id (base64url).
@@ -48,6 +49,7 @@ type ControlRequest struct {
 	ID     string   `json:"id,omitempty"`
 	IDs    []string `json:"ids,omitempty"`
 	Period string   `json:"period,omitempty"` // OpUsage: usage.Day, Week or Month
+	Label  string   `json:"label,omitempty"`  // OpRename
 }
 
 // ControlResponse is the answer. Error is set when the operation did not
@@ -162,6 +164,9 @@ func (c *Controller) Handle(req ControlRequest) ControlResponse {
 		return answer("", c.Srv.MarkNotified(req.IDs))
 	case OpUsage:
 		return c.usage(req, now)
+	case OpRename:
+		d, err := c.Srv.Registry.SetLabel(req.ID, req.Label)
+		return answer(d.Shown(), err)
 	}
 	return ControlResponse{Error: fmt.Sprintf("unknown operation %q", req.Op)}
 }
@@ -176,7 +181,7 @@ func (c *Controller) usage(req ControlRequest, now time.Time) ControlResponse {
 	}
 	names := map[string]DeviceLabel{}
 	for _, d := range c.Srv.Overview(now).Devices {
-		names[d.ID] = DeviceLabel{Name: d.Name, Code: codeOf(d.PublicKey)}
+		names[d.ID] = DeviceLabel{Name: d.Shown(), Code: codeOf(d.PublicKey)}
 	}
 	return ControlResponse{OK: true, Usage: &UsageView{Report: r, Names: names}}
 }

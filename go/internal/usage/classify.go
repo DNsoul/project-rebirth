@@ -38,7 +38,7 @@ func (c Classifier) Site(remote netip.Addr) string {
 			return SiteTelegram
 		}
 	}
-	return SiteUnknown
+	return SiteElsewhere
 }
 
 // Records turns counted flows into traffic of devices to sites. device tells
