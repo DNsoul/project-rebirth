@@ -4,9 +4,14 @@
 //
 // It is the one place in the project that writes down sites, and it does so
 // only as far as the operator needs to see what eats the traffic allowance: a
-// site is the registrable domain or a well-known service ("YouTube"), never the
-// full name, and only sums are kept, never when or how often a site was asked
-// for. Nothing here is logged.
+// site is the registrable domain ("googlevideo.com"), never the full name, and
+// only sums are kept, never when or how often a site was asked for. Nothing
+// here is logged.
+//
+// A site is a domain rather than a service ("YouTube") because the operator
+// acts on what the list shows: a line can be sent past the server, and that
+// works by domain. A service made of several domains would hide which of them
+// would go.
 package usage
 
 import (
@@ -39,8 +44,9 @@ const (
 	SiteOther = "остальное"
 )
 
-// services groups the domains that make up one service the operator knows
-// by name: a video is served from googlevideo.com, not from youtube.com.
+// services names the service a domain belongs to, for a hint next to a
+// domain whose name does not say it: a video is served from googlevideo.com,
+// not from youtube.com.
 var services = map[string]string{
 	"youtube.com": "YouTube", "googlevideo.com": "YouTube", "ytimg.com": "YouTube",
 	"ggpht.com": "YouTube", "youtube-nocookie.com": "YouTube", "youtu.be": "YouTube",
@@ -73,9 +79,10 @@ var services = map[string]string{
 	"chatgpt.com": "ChatGPT", "openai.com": "ChatGPT", "oaiusercontent.com": "ChatGPT",
 }
 
-// SiteOf is the site a name belongs to: the service it is part of, if it is
-// a known one, or else its registrable domain ("rr3---sn-x.googlevideo.com"
-// is YouTube, "cdn.example.co.uk" is example.co.uk).
+// SiteOf is the site a name belongs to: its registrable domain
+// ("rr3---sn-x.googlevideo.com" is googlevideo.com, "cdn.example.co.uk" is
+// example.co.uk). A name under a shared host is its own site
+// ("d1234.cloudfront.net"), since the host serves thousands of unrelated ones.
 func SiteOf(name string) string {
 	name = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
 	if name == "" {
@@ -87,8 +94,9 @@ func SiteOf(name string) string {
 		// it is short anyway.
 		site = name
 	}
-	if s, ok := services[site]; ok {
-		return s
-	}
 	return site
 }
+
+// ServiceOf names the well-known service a site is part of, or "" when it is
+// not one: googlevideo.com is YouTube.
+func ServiceOf(site string) string { return services[site] }

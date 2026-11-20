@@ -42,6 +42,9 @@ type splitRuntime struct {
 	cfg    *SplitConfig
 
 	ruRanges, forceTunnel, forceDirect int
+
+	// direct is the operator's list, nil when it could not be read.
+	direct *directRouting
 }
 
 func (s *splitRuntime) stop() {
@@ -99,9 +102,10 @@ func (n *Node) startSplit(ctx context.Context) error {
 	}
 	n.log.Info("restored translations", "count", len(entries))
 
+	decider := &splitdns.Decider{RU: set, ForceTunnel: forceTunnel, ForceDirect: forceDirect}
 	clientSubnet := netip.MustParsePrefix(cfg.ClientSubnet)
 	srv, err := splitdns.NewServer(splitdns.Config{
-		Decider:   &splitdns.Decider{RU: set, ForceTunnel: forceTunnel, ForceDirect: forceDirect},
+		Decider:   decider,
 		Pool:      pool,
 		Mapper:    nft,
 		Primary:   &splitdns.Upstream{Addr: cfg.PrimaryUpstream, ECS: clientSubnet},
@@ -133,6 +137,17 @@ func (n *Node) startSplit(ctx context.Context) error {
 		cancel: cancel, server: srv, pool: pool, cfg: cfg,
 		ruRanges: set.Ranges(), forceTunnel: forceTunnel.Len(), forceDirect: forceDirect.Len(),
 	}
+	directPath := cfg.DirectPath
+	if directPath == "" {
+		directPath = DefaultDirectPath
+	}
+	if list, err := splitdns.OpenDirectList(directPath); err != nil {
+		// Left unused rather than started empty: an empty list saved over an
+		// unreadable one would lose the operator's choices for good.
+		n.log.Error("the operator's list of direct sites does not read; it cannot be used or changed", "path", directPath, "error", err)
+	} else {
+		rt.direct = NewDirectRouting(list, decider, srv.Forget)
+	}
 	rt.wg.Add(2)
 	go func() {
 		defer rt.wg.Done()
@@ -146,8 +161,12 @@ func (n *Node) startSplit(ctx context.Context) error {
 	}()
 
 	n.split = rt
+	chosen := 0
+	if rt.direct != nil {
+		chosen = len(rt.direct.Names())
+	}
 	n.log.Info("split resolver is listening", "address", addr,
-		"ru_ranges", rt.ruRanges, "force_tunnel", rt.forceTunnel, "force_direct", rt.forceDirect)
+		"ru_ranges", rt.ruRanges, "force_tunnel", rt.forceTunnel, "force_direct", rt.forceDirect, "chosen", chosen)
 	return nil
 }
 
@@ -232,10 +251,14 @@ func (n *Node) splitStatus() *SplitStatus {
 	if rt == nil {
 		return nil
 	}
-	return &SplitStatus{
+	st := &SplitStatus{
 		Stats:       rt.server.Stats(),
 		RURanges:    rt.ruRanges,
 		ForceTunnel: rt.forceTunnel,
 		ForceDirect: rt.forceDirect,
 	}
+	if rt.direct != nil {
+		st.Chosen = len(rt.direct.Names())
+	}
+	return st
 }

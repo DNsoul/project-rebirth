@@ -269,28 +269,37 @@ type Report struct {
 
 	// Device is set for a report about one device; Devices is then empty.
 	Device string `json:"device,omitempty"`
+
+	// Site is set for a report about one site: Total is the traffic to it,
+	// Devices the devices that used it, and Sites is empty. A device's own
+	// list is cut shorter than the overall one, so the devices of a small
+	// site may add up to less than its total.
+	Site string `json:"site,omitempty"`
 }
 
 // ValidPeriod reports whether p is a period a report can cover.
 func ValidPeriod(p string) bool { return p == Day || p == Week || p == Month }
 
-// Report sums a period, for every device or for one.
-func (s *Store) Report(period, device string, now time.Time) (Report, error) {
-	var (
-		list  []*Bucket
-		start int64
-	)
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// span picks the buckets a period is summed from and where it begins.
+func (s *Store) span(period string, now time.Time) ([]*Bucket, int64, error) {
 	switch period {
 	case Day:
-		list, start = s.h.Hours, hourOf(now)-23*3600
+		return s.h.Hours, hourOf(now) - 23*3600, nil
 	case Week:
-		list, start = s.h.Days, time.Unix(dayOf(now), 0).AddDate(0, 0, -6).Unix()
+		return s.h.Days, time.Unix(dayOf(now), 0).AddDate(0, 0, -6).Unix(), nil
 	case Month:
-		list, start = s.h.Days, time.Unix(dayOf(now), 0).AddDate(0, 0, -29).Unix()
-	default:
-		return Report{}, fmt.Errorf("unknown period %q", period)
+		return s.h.Days, time.Unix(dayOf(now), 0).AddDate(0, 0, -29).Unix(), nil
+	}
+	return nil, 0, fmt.Errorf("unknown period %q", period)
+}
+
+// Report sums a period, for every device or for one.
+func (s *Store) Report(period, device string, now time.Time) (Report, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list, start, err := s.span(period, now)
+	if err != nil {
+		return Report{}, err
 	}
 
 	r := Report{Period: period, Device: device, From: start}
@@ -330,6 +339,41 @@ func (s *Store) Report(period, device string, now time.Time) (Report, error) {
 	if device == "" {
 		r.Devices = sorted(devices)
 	}
+	return r, nil
+}
+
+// SiteReport sums a period for one site: how much went to it, and from which
+// devices.
+func (s *Store) SiteReport(period, site string, now time.Time) (Report, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list, start, err := s.span(period, now)
+	if err != nil {
+		return Report{}, err
+	}
+
+	r := Report{Period: period, Site: site, From: start}
+	devices := map[string]Bytes{}
+	first := true
+	for _, b := range list {
+		if b.Start < start {
+			continue
+		}
+		if first {
+			r.From = max(start, b.Start)
+			first = false
+		}
+		r.Server.add(b.Server)
+		r.Total.add(b.Sites[site])
+		for d, m := range b.DeviceSites {
+			if v, ok := m[site]; ok {
+				x := devices[d]
+				x.add(v)
+				devices[d] = x
+			}
+		}
+	}
+	r.Devices = sorted(devices)
 	return r, nil
 }
 

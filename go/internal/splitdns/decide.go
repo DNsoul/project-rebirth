@@ -2,6 +2,7 @@ package splitdns
 
 import (
 	"net/netip"
+	"sync/atomic"
 
 	"awgrotator/internal/ruset"
 )
@@ -46,6 +47,10 @@ type Decider struct {
 	// the one that hides the home address.
 	ForceTunnel *Rules
 	ForceDirect *Rules
+
+	// Chosen is the operator's own list of sites sent direct, which changes
+	// while the server runs. It counts like ForceDirect: tunnel still wins.
+	Chosen atomic.Pointer[Rules]
 }
 
 // Decide chooses a verdict for a name given every address it resolved to.
@@ -62,6 +67,8 @@ func (d *Decider) Decide(name string, addrs []netip.Addr) Decision {
 		return Decision{Tunnel, "forced into the tunnel"}
 	case d.ForceDirect.Match(name):
 		return Decision{Direct, "forced direct"}
+	case d.Chosen.Load().Match(name):
+		return Decision{Direct, "sent direct by the operator"}
 	}
 	if len(addrs) == 0 {
 		return Decision{Tunnel, "no addresses"}

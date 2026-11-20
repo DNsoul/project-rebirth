@@ -299,6 +299,7 @@ type fakeHost struct {
 	written    []byte
 	exitWrites []egress.Mode
 	usage      []byte
+	direct     []byte
 	report     *node.UsageView
 	reportErr  error
 }
@@ -313,6 +314,7 @@ func (h *fakeHost) ReadPool() ([]byte, error)     { return h.pool, nil }
 func (h *fakeHost) ReadRegistry() ([]byte, error) { return h.registry, nil }
 func (h *fakeHost) ReadAccess() ([]byte, error)   { return h.access, nil }
 func (h *fakeHost) ReadUsage() ([]byte, error)    { return h.usage, nil }
+func (h *fakeHost) ReadDirect() ([]byte, error)   { return h.direct, nil }
 func (h *fakeHost) Usage(context.Context, string) (*node.UsageView, error) {
 	return h.report, h.reportErr
 }

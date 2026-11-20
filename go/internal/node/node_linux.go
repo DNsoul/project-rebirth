@@ -483,6 +483,12 @@ func (n *Node) startControl(context.Context) error {
 		},
 		Log: n.log.With("component", "control"),
 	}
+	// The resolver is started before the socket, so its list is there to
+	// hand over. Assigned only when present: a nil pointer in the interface
+	// would look like a list.
+	if n.split != nil && n.split.direct != nil {
+		ctl.Direct = n.split.direct
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {

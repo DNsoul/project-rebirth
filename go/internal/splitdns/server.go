@@ -151,6 +151,10 @@ func (s *Server) Stats() Stats {
 	}
 }
 
+// Forget drops every remembered resolution, so the next query for any name
+// is decided afresh. It is called when the rules change.
+func (s *Server) Forget() { s.cache.clear() }
+
 // Handle answers one query. It returns nil when the packet is not something
 // that deserves an answer, which for DNS means dropping it.
 func (s *Server) Handle(ctx context.Context, raw []byte) []byte {
@@ -496,6 +500,12 @@ func (c *resolutionCache) get(name string) *resolution {
 		return nil
 	}
 	return res
+}
+
+func (c *resolutionCache) clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.m = map[string]*resolution{}
 }
 
 func (c *resolutionCache) put(name string, res *resolution) {

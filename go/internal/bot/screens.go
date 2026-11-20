@@ -346,7 +346,7 @@ func (b *Bot) deviceView(ctx context.Context, id string) view {
 			sites = append(sites, []string{siteName(it.Key), amount(it.Total())})
 		}
 		if len(sites) > 0 {
-			block = "\n\n" + columns(sites, 16, -7)
+			block = "\n\n" + columns(sites, 19, -7)
 		}
 	}
 	text := shownName(d) + "\n" + telegram.Mono(columns(rows, 12, 18)+block)

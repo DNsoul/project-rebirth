@@ -95,6 +95,14 @@ type Bot struct {
 	// renames are the questions for a device's new name still unanswered, by
 	// the message that asked, with the device each is about.
 	renames map[int64]string
+
+	// directAsks are the questions for a site to send direct still
+	// unanswered, by the message that asked.
+	directAsks map[int64]bool
+
+	// refs are the sites too long to travel in button data, by the short key
+	// that travels instead.
+	refs map[string]string
 }
 
 // Defaults for the timings.
@@ -290,7 +298,7 @@ func (b *Bot) handle(ctx context.Context, u telegram.Update) {
 		if m.From == nil || !b.isOwner(m.From.ID) || m.Chat.Type != "private" {
 			return
 		}
-		if b.renamed(ctx, m) {
+		if b.renamed(ctx, m) || b.directAnswered(ctx, m) {
 			return
 		}
 		b.command(ctx, m.Chat.ID, strings.TrimSpace(m.Text))
@@ -420,6 +428,8 @@ func (b *Bot) press(ctx context.Context, q *telegram.CallbackQuery) {
 
 	case "tr":
 		edit(b.trafficView(ctx, periodOf(arg)))
+	case "tv", "ts", "da", "dr", "dp", "dd", "dx", "dq":
+		notice = b.pressDirect(ctx, chat, op, arg, edit)
 	case "td": // a "Куда" button from before the device cards
 		_, id, _ := strings.Cut(arg, ":")
 		edit(b.deviceView(ctx, id))

@@ -78,21 +78,27 @@ func TestTheMeterIsSafeFromManyGoroutines(t *testing.T) {
 	}
 }
 
-func TestSitesAreServicesOrRegistrableDomainsNeverFullNames(t *testing.T) {
+func TestSitesAreRegistrableDomainsNeverFullNames(t *testing.T) {
 	for name, want := range map[string]string{
-		"rr3---sn-4g5e6nzz.googlevideo.com.": "YouTube",
-		"www.YouTube.com":                    "YouTube",
-		"scontent-ams2-1.cdninstagram.com":   "Instagram",
-		"cache1-fra1.steamcontent.com":       "Steam",
-		"video-weaver.fra05.hls.ttvnw.net":   "Twitch",
+		"rr3---sn-4g5e6nzz.googlevideo.com.": "googlevideo.com",
+		"www.YouTube.com":                    "youtube.com",
+		"cache1-fra1.steamcontent.com":       "steamcontent.com",
+		"video-weaver.fra05.hls.ttvnw.net":   "ttvnw.net",
 		"cdn.example.co.uk":                  "example.co.uk",
 		"a.b.c.github.io":                    "c.github.io",
+		"img.dgeft87wbj63p.cloudfront.net":   "dgeft87wbj63p.cloudfront.net",
 		"localhost":                          "localhost",
 		"":                                   SiteUnknown,
 	} {
 		if got := SiteOf(name); got != want {
 			t.Errorf("SiteOf(%q) = %q, want %q", name, got, want)
 		}
+	}
+}
+
+func TestAKnownDomainNamesItsService(t *testing.T) {
+	if ServiceOf("googlevideo.com") != "YouTube" || ServiceOf("steamcontent.com") != "Steam" || ServiceOf("example.com") != "" {
+		t.Error(ServiceOf("googlevideo.com"), ServiceOf("steamcontent.com"), ServiceOf("example.com"))
 	}
 }
 
@@ -248,5 +254,40 @@ func BenchmarkMeterBatch(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		m.Count(batch, sizes, 0, len(batch), true)
+	}
+}
+
+func TestASiteReportSaysWhichDevicesUsedIt(t *testing.T) {
+	const gb = 1_000_000_000
+	s, err := Open(t.TempDir() + "/usage.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Date(2026, 11, 20, 12, 30, 0, 0, time.UTC)
+	s.Add(t0.Add(-2*time.Hour), []Record{
+		{Device: "pc", Site: "steamcontent.com", Bytes: Bytes{Down: 5 * gb}},
+		{Device: "phone", Site: "steamcontent.com", Bytes: Bytes{Down: gb}},
+		{Device: "phone", Site: "googlevideo.com", Bytes: Bytes{Down: 2 * gb}},
+	})
+	s.Add(t0.AddDate(0, 0, -3), []Record{{Device: "laptop", Site: "steamcontent.com", Bytes: Bytes{Down: 9 * gb}}})
+
+	day, err := s.SiteReport(Day, "steamcontent.com", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if day.Site != "steamcontent.com" || day.Total.Total() != 6*gb || len(day.Devices) != 2 ||
+		day.Devices[0].Key != "pc" || day.Devices[1].Key != "phone" || len(day.Sites) != 0 {
+		t.Errorf("day: %+v", day)
+	}
+	week, _ := s.SiteReport(Week, "steamcontent.com", t0)
+	if week.Total.Total() != 15*gb || week.Devices[0].Key != "laptop" {
+		t.Errorf("week: %+v", week)
+	}
+	none, _ := s.SiteReport(Day, "example.com", t0)
+	if none.Total.Total() != 0 || len(none.Devices) != 0 {
+		t.Errorf("unknown site: %+v", none)
+	}
+	if _, err := s.SiteReport("year", "example.com", t0); err == nil {
+		t.Error("a year is not a period")
 	}
 }

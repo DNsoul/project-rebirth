@@ -14,6 +14,7 @@ import (
 	"awgrotator/internal/awg"
 	"awgrotator/internal/enroll"
 	"awgrotator/internal/proto"
+	"awgrotator/internal/splitdns"
 	"awgrotator/internal/usage"
 )
 
@@ -39,8 +40,21 @@ const (
 	OpAllow    = "allow"
 	OpForget   = "forget"
 	OpNotified = "notified"
-	OpUsage    = "usage"  // where the traffic went over Period, for ID or for everyone
+	OpUsage    = "usage"  // where the traffic went over Period, for ID, for Site or for everyone
 	OpRename   = "rename" // give device ID the operator's Label; empty goes back to its own name
+
+	OpDirect       = "direct"        // the operator's list of sites sent direct
+	OpDirectAdd    = "direct-add"    // put Name on the list
+	OpDirectRemove = "direct-remove" // take Name off the list
+)
+
+// Reasons the list refuses a name, in ControlResponse.Reason. A name that is
+// not on the list to take off is Missing instead.
+const (
+	DirectNotAName     = "not-a-name"
+	DirectTooBroad     = "too-broad"     // a public suffix, such as "com"
+	DirectAlwaysTunnel = "always-tunnel" // under the rules that always tunnel
+	DirectFull         = "full"
 )
 
 // ControlRequest is one question or decision. ID is a device id (base64url).
@@ -49,7 +63,9 @@ type ControlRequest struct {
 	ID     string   `json:"id,omitempty"`
 	IDs    []string `json:"ids,omitempty"`
 	Period string   `json:"period,omitempty"` // OpUsage: usage.Day, Week or Month
+	Site   string   `json:"site,omitempty"`   // OpUsage: report on this site
 	Label  string   `json:"label,omitempty"`  // OpRename
+	Name   string   `json:"name,omitempty"`   // OpDirectAdd, OpDirectRemove
 }
 
 // ControlResponse is the answer. Error is set when the operation did not
@@ -62,8 +78,9 @@ type ControlResponse struct {
 	Reason   string           `json:"reason,omitempty"`
 	Missing  bool             `json:"missing,omitempty"`
 	Overview *ControlOverview `json:"overview,omitempty"`
-	Name     string           `json:"name,omitempty"` // the device acted on
+	Name     string           `json:"name,omitempty"` // the device acted on, or the site as listed
 	Usage    *UsageView       `json:"usage,omitempty"`
+	Direct   []string         `json:"direct,omitempty"` // the list after an OpDirect*
 }
 
 // UsageView is a traffic report with the devices' names and codes, by id.
@@ -121,6 +138,10 @@ type Controller struct {
 	// Usage is the traffic history; nil when traffic is not counted.
 	Usage *usage.Store
 
+	// Direct is the operator's list of sites sent direct; nil when the
+	// server does not split traffic.
+	Direct DirectRouting
+
 	Now func() time.Time
 	Log *slog.Logger
 }
@@ -167,6 +188,8 @@ func (c *Controller) Handle(req ControlRequest) ControlResponse {
 	case OpRename:
 		d, err := c.Srv.Registry.SetLabel(req.ID, req.Label)
 		return answer(d.Shown(), err)
+	case OpDirect, OpDirectAdd, OpDirectRemove:
+		return c.direct(req)
 	}
 	return ControlResponse{Error: fmt.Sprintf("unknown operation %q", req.Op)}
 }
@@ -175,7 +198,13 @@ func (c *Controller) usage(req ControlRequest, now time.Time) ControlResponse {
 	if c.Usage == nil {
 		return ControlResponse{Error: "traffic is not counted on this server"}
 	}
-	r, err := c.Usage.Report(req.Period, req.ID, now)
+	var r usage.Report
+	var err error
+	if req.Site != "" {
+		r, err = c.Usage.SiteReport(req.Period, req.Site, now)
+	} else {
+		r, err = c.Usage.Report(req.Period, req.ID, now)
+	}
 	if err != nil {
 		return ControlResponse{Error: err.Error()}
 	}
@@ -184,6 +213,43 @@ func (c *Controller) usage(req ControlRequest, now time.Time) ControlResponse {
 		names[d.ID] = DeviceLabel{Name: d.Shown(), Code: codeOf(d.PublicKey)}
 	}
 	return ControlResponse{OK: true, Usage: &UsageView{Report: r, Names: names}}
+}
+
+func (c *Controller) direct(req ControlRequest) ControlResponse {
+	if c.Direct == nil {
+		return ControlResponse{Error: "this server does not split traffic"}
+	}
+	var (
+		name string
+		err  error
+	)
+	switch req.Op {
+	case OpDirectAdd:
+		name, err = c.Direct.Add(req.Name)
+		if err == nil {
+			c.log().Info("a site is sent direct by the operator", "count", len(c.Direct.Names()))
+		}
+	case OpDirectRemove:
+		err = c.Direct.Remove(req.Name)
+		name = req.Name
+	}
+	if err != nil {
+		r := ControlResponse{Error: err.Error()}
+		switch {
+		case errors.Is(err, splitdns.ErrNotAName):
+			r.Reason = DirectNotAName
+		case errors.Is(err, splitdns.ErrTooBroad):
+			r.Reason = DirectTooBroad
+		case errors.Is(err, ErrAlwaysTunnel):
+			r.Reason = DirectAlwaysTunnel
+		case errors.Is(err, splitdns.ErrDirectFull):
+			r.Reason = DirectFull
+		case errors.Is(err, splitdns.ErrNotListed):
+			r.Missing = true
+		}
+		return r
+	}
+	return ControlResponse{OK: true, Name: name, Direct: c.Direct.Names()}
 }
 
 func answer(name string, err error) ControlResponse {

@@ -196,6 +196,15 @@ func (h *SystemHost) ReadPool() ([]byte, error) {
 	return raw, err
 }
 
+// ReadDirect implements Host.
+func (h *SystemHost) ReadDirect() ([]byte, error) {
+	raw, err := os.ReadFile(node.DefaultDirectPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return raw, err
+}
+
 // ReadWatchLog implements Host: the end of the availability log, for a
 // replacement to carry on from.
 func (h *SystemHost) ReadWatchLog() ([]byte, error) {

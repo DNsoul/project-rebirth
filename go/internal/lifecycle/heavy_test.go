@@ -102,3 +102,20 @@ func TestTheSuccessorCarriesOnCountingTraffic(t *testing.T) {
 		t.Error("a history that does not check out was passed on")
 	}
 }
+
+func TestTheSuccessorKeepsTheSitesSentDirect(t *testing.T) {
+	raw := []byte("# Сайты\nsteamcontent.com\nriotcdn.net\n")
+	r := newRig(t)
+	r.host.direct = raw
+	mustMove(t, r, MoveRequest{Trigger: TriggerCommand})
+	got, ok := filesByPath(r)[node.DefaultDirectPath]
+	if !ok || string(got) != string(raw) {
+		t.Fatalf("the list was not passed on; files: %v", paths(r.prov.files))
+	}
+
+	none := newRig(t)
+	mustMove(t, none, MoveRequest{Trigger: TriggerCommand})
+	if _, ok := filesByPath(none)[node.DefaultDirectPath]; ok {
+		t.Error("an empty list was passed on")
+	}
+}

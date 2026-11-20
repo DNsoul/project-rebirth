@@ -20,6 +20,7 @@ import (
 	"awgrotator/internal/enroll"
 	"awgrotator/internal/fleet"
 	"awgrotator/internal/node"
+	"awgrotator/internal/splitdns"
 	"awgrotator/internal/splitplan"
 	"awgrotator/internal/tunneltest"
 	"awgrotator/internal/usage"
@@ -92,6 +93,10 @@ type Host interface {
 	// ReadUsage returns the node's traffic history, or nil if there is none,
 	// for a replacement to carry on counting from.
 	ReadUsage() ([]byte, error)
+
+	// ReadDirect returns the operator's list of sites sent direct, or nil if
+	// there is none, for a replacement to keep.
+	ReadDirect() ([]byte, error)
 
 	// Usage asks the node where the traffic went over a period.
 	Usage(ctx context.Context, period string) (*node.UsageView, error)
@@ -511,6 +516,12 @@ func (e *Engine) successorFiles(s *cloud.Server, place PlaceConfig, body *fleet.
 			What: "учёт трафика", Path: node.DefaultUsagePath, Mode: "0600", Content: raw,
 		})
 	}
+	// The sites the operator sent direct stay direct after the move.
+	if raw := e.inheritedDirect(); len(raw) > 0 {
+		files = append(files, deploy.File{
+			What: "сайты напрямую", Path: node.DefaultDirectPath, Mode: "0644", Content: raw,
+		})
+	}
 	if devices := e.inheritedDevices(); len(devices) > 0 {
 		files = append(files, deploy.File{
 			What: "список устройств", Path: enroll.DefaultRegistryPath, Mode: "0600", Content: devices,
@@ -537,6 +548,25 @@ func (e *Engine) inheritedUsage() []byte {
 	}
 	if _, err := usage.Parse(raw); err != nil {
 		e.log().Warn("the traffic history does not check out; the new server starts counting afresh", "error", err)
+		return nil
+	}
+	return raw
+}
+
+// inheritedDirect is the operator's list of sites sent direct, if it reads.
+// One that cannot be read is left behind and the sites go through the tunnel
+// again: the safe direction, and the operator can send them direct anew.
+func (e *Engine) inheritedDirect() []byte {
+	raw, err := e.Host.ReadDirect()
+	if err != nil {
+		e.log().Warn("could not read the list of direct sites; on the new server they go through the tunnel", "error", err)
+		return nil
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	if _, err := splitdns.ParseDirectList(raw); err != nil {
+		e.log().Warn("the list of direct sites does not check out; on the new server they go through the tunnel", "error", err)
 		return nil
 	}
 	return raw

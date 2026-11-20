@@ -230,6 +230,11 @@ const (
 	// DefaultUsagePath is the traffic history: sums by device and by site,
 	// handed to the replacement with the device list.
 	DefaultUsagePath = "/var/lib/awgnode/usage.json"
+
+	// DefaultDirectPath is the operator's own list of sites sent direct,
+	// changed from the bot and handed to the replacement. It is apart from
+	// force_direct.txt, which every update replaces.
+	DefaultDirectPath = "/var/lib/awgnode/direct.txt"
 )
 
 // SplitConfig describes the split-routing resolver.
@@ -247,6 +252,10 @@ type SplitConfig struct {
 	ForceTunnelPath string `json:"force_tunnel_path,omitempty"`
 	ForceDirectPath string `json:"force_direct_path,omitempty"`
 	PoolPath        string `json:"pool_path,omitempty"`
+
+	// DirectPath is the operator's list; empty means DefaultDirectPath, so a
+	// configuration written before the list existed gets one too.
+	DirectPath string `json:"direct_path,omitempty"`
 
 	// PrimaryUpstream is asked with ClientSubnet, SecondaryUpstream without.
 	PrimaryUpstream   string `json:"primary_upstream"`
@@ -272,6 +281,7 @@ func NewSplitConfig() *SplitConfig {
 		ForceTunnelPath:   DefaultForceTunnelPath,
 		ForceDirectPath:   DefaultForceDirectPath,
 		PoolPath:          DefaultPoolPath,
+		DirectPath:        DefaultDirectPath,
 		PrimaryUpstream:   "8.8.8.8:53",
 		SecondaryUpstream: "1.1.1.1:53",
 		ClientSubnet:      "77.88.8.0/24",

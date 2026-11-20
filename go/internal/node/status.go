@@ -49,6 +49,9 @@ type SplitStatus struct {
 	RURanges    int `json:"ru_ranges"`
 	ForceTunnel int `json:"force_tunnel"`
 	ForceDirect int `json:"force_direct"`
+
+	// Chosen is how many sites the operator has sent direct from the bot.
+	Chosen int `json:"chosen"`
 }
 
 // Status is the node's report about itself. awgctl reads it over SSH, and

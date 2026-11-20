@@ -91,3 +91,25 @@ func TestTheOperatorCanNameADeviceAndTheNameIsUsedEverywhere(t *testing.T) {
 		t.Errorf("clearing the name: %+v", r)
 	}
 }
+
+func TestASiteReportSaysWhoUsedTheSite(t *testing.T) {
+	ctl, _, now := controlRig(t)
+	id := proto.Encode(fill(1, proto.DeviceIDSize))
+	if resp := ctl.Handle(ControlRequest{Op: OpApprove, ID: id}); !resp.OK {
+		t.Fatalf("approve: %+v", resp)
+	}
+	store, err := usage.Open(filepath.Join(t.TempDir(), "usage.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Add(*now, []usage.Record{
+		{Device: id, Site: "steamcontent.com", Bytes: usage.Bytes{Down: 900}},
+		{Device: id, Site: "googlevideo.com", Bytes: usage.Bytes{Down: 50}},
+	})
+	ctl.Usage = store
+	resp := ctl.Handle(ControlRequest{Op: OpUsage, Period: usage.Day, Site: "steamcontent.com"})
+	if !resp.OK || resp.Usage.Site != "steamcontent.com" || resp.Usage.Total.Total() != 900 ||
+		len(resp.Usage.Devices) != 1 || resp.Usage.Devices[0].Key != id || resp.Usage.Names[id].Name == "" {
+		t.Errorf("resp = %+v", resp.Usage)
+	}
+}
