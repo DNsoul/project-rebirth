@@ -430,6 +430,11 @@ func (b *Bot) press(ctx context.Context, q *telegram.CallbackQuery) {
 		edit(b.trafficView(ctx, periodOf(arg)))
 	case "tv", "ts", "da", "dr", "dp", "dd", "dx", "dq":
 		notice = b.pressDirect(ctx, chat, op, arg, edit)
+	case "ux":
+		edit(confirmReset())
+	case "ux!":
+		notice = b.resetUsage(ctx)
+		edit(b.trafficView(ctx, usage.Day))
 	case "td": // a "Куда" button from before the device cards
 		_, id, _ := strings.Cut(arg, ":")
 		edit(b.deviceView(ctx, id))

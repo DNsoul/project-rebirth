@@ -26,6 +26,13 @@ const directPerPage = 10
 // maxData is the most button data Telegram carries.
 const maxData = 64
 
+// directMark marks a site sent direct in a list of sites. It is one
+// character, so the columns of the monospace block stay in line.
+var directMark = "→"
+
+// directLegend explains the mark, under a list that has one.
+func directLegend() string { return directMark + " напрямую, мимо сервера" }
+
 // directList reads the operator's list from the node.
 func (b *Bot) directList(ctx context.Context) ([]string, error) {
 	resp, err := b.Devices.Control(ctx, node.ControlRequest{Op: node.OpDirect})

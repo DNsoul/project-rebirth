@@ -43,6 +43,8 @@ const (
 	OpUsage    = "usage"  // where the traffic went over Period, for ID, for Site or for everyone
 	OpRename   = "rename" // give device ID the operator's Label; empty goes back to its own name
 
+	OpUsageReset = "usage-reset" // forget the traffic history and start counting again
+
 	OpDirect       = "direct"        // the operator's list of sites sent direct
 	OpDirectAdd    = "direct-add"    // put Name on the list
 	OpDirectRemove = "direct-remove" // take Name off the list
@@ -188,6 +190,15 @@ func (c *Controller) Handle(req ControlRequest) ControlResponse {
 	case OpRename:
 		d, err := c.Srv.Registry.SetLabel(req.ID, req.Label)
 		return answer(d.Shown(), err)
+	case OpUsageReset:
+		if c.Usage == nil {
+			return ControlResponse{Error: "traffic is not counted on this server"}
+		}
+		if err := c.Usage.Reset(now); err != nil {
+			return ControlResponse{Error: err.Error()}
+		}
+		c.log().Info("the operator reset the traffic history")
+		return ControlResponse{OK: true}
 	case OpDirect, OpDirectAdd, OpDirectRemove:
 		return c.direct(req)
 	}

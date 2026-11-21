@@ -93,7 +93,7 @@ func TestTheTrafficScreenNumbersTheLargestSites(t *testing.T) {
 	}
 	if len(v.kb) != 5 || v.kb[0][1].Data != "tr:w" || len(v.kb[1]) != 5 || v.kb[1][1].Data != "ts:d:steamcontent.com" ||
 		len(v.kb[2]) != 1 || v.kb[2][0].Text != "6" || v.kb[3][0].Data != "tv:d" || v.kb[3][1].Text != "Напрямую" ||
-		v.kb[3][1].Data != "dp:0" || v.kb[4][0].Data != "m:main" {
+		v.kb[3][1].Data != "dp:0" || v.kb[4][0].Data != "m:main" || v.kb[4][1].Data != "ux" {
 		t.Errorf("buttons = %+v", v.kb)
 	}
 
@@ -166,8 +166,22 @@ func TestASiteFromTheListIsSentDirectAndBack(t *testing.T) {
 	}
 
 	list := r.bot.trafficView(ctx, usage.Week)
-	if !strings.HasSuffix(list.text, "\nНапрямую уже: 2.") || list.kb[len(list.kb)-2][1].Text != "Напрямую · 1" {
+	for _, want := range []string{" 1  googlevideo.com      121 ГБ\n 2→ steamcontent.com      43 ГБ\n",
+		"\n    Остальное ", "\n    Сервер отправил      192 ГБ"} {
+		if !strings.Contains(list.text, want) {
+			t.Errorf("the traffic list lacks %q:\n%s", want, list.text)
+		}
+	}
+	if !strings.HasSuffix(list.text, "\n→ напрямую, мимо сервера") || list.kb[len(list.kb)-2][1].Text != "Напрямую · 1" {
 		t.Errorf("the traffic list does not show it: %q, %+v", list.text, list.kb)
+	}
+	devCard := r.bot.deviceView(ctx, idOf(1))
+	if !strings.Contains(devCard.text, "\n  googlevideo.com      120 ГБ\n→ steamcontent.com      42 ГБ") ||
+		!strings.HasSuffix(devCard.text, "\n→ напрямую, мимо сервера") {
+		t.Errorf("the device card does not mark it:\n%s", devCard.text)
+	}
+	if other := r.bot.deviceView(ctx, idOf(2)); strings.Contains(other.text, "напрямую") || !strings.Contains(other.text, "\nttvnw.net") {
+		t.Errorf("a card with nothing direct has a mark:\n%s", other.text)
 	}
 
 	r.bot.handle(ctx, press(owner, "dr:w:steamcontent.com"))
@@ -352,5 +366,38 @@ func TestAmountsAreShortAndDecimal(t *testing.T) {
 	}
 	if siteName(usage.SiteUnknown) != "Неизвестно" || siteName("example.com") != "example.com" || siteName("YouTube") != "YouTube" {
 		t.Error("site names")
+	}
+}
+
+func TestTheTrafficHistoryIsResetAfterAConfirmation(t *testing.T) {
+	r, store := trafficRig(t)
+	someTraffic(r, store)
+	ctx := context.Background()
+
+	r.bot.handle(ctx, press(owner, "ux"))
+	_, edits, _ := r.api.snapshot()
+	ask := edits[len(edits)-1]
+	if !strings.HasPrefix(ask.text, "Стереть учёт трафика?") || ask.kb[0][0].Data != "ux!" ||
+		ask.kb[0][0].Style != telegram.StyleDanger || ask.kb[0][1].Data != "tr:d" {
+		t.Fatalf("confirmation: %q, %+v", ask.text, ask.kb)
+	}
+	if v := r.bot.trafficView(ctx, usage.Day); strings.Contains(v.text, "пока ничего") {
+		t.Fatal("the confirmation alone reset the history")
+	}
+
+	r.mgr.snap.Moving = true
+	r.bot.handle(ctx, press(owner, "ux!"))
+	if _, _, answers := r.api.snapshot(); !strings.HasPrefix(answers[len(answers)-1], "Идёт переезд") {
+		t.Errorf("during a move: %q", answers[len(answers)-1])
+	}
+	r.mgr.snap.Moving = false
+
+	r.bot.handle(ctx, press(owner, "ux!"))
+	_, edits, answers := r.api.snapshot()
+	if answers[len(answers)-1] != "Учёт трафика начат заново." || edits[len(edits)-1].text != "Трафик за сутки: пока ничего." {
+		t.Errorf("after reset: %q, notice %q", edits[len(edits)-1].text, answers[len(answers)-1])
+	}
+	if card := r.bot.deviceView(ctx, idOf(1)); !strings.Contains(card.text, "Сутки        0") {
+		t.Errorf("the device card still counts:\n%s", card.text)
 	}
 }

@@ -140,7 +140,10 @@ func (b *Bot) trafficView(ctx context.Context, period string) view {
 	if listErr == nil && len(names) > 0 {
 		directBtn.Text = fmt.Sprintf("Напрямую · %d", len(names))
 	}
-	tail := telegram.Keyboard{{btn("Устройства", "tv:"+pk), directBtn}, backRow}
+	tail := telegram.Keyboard{
+		{btn("Устройства", "tv:"+pk), directBtn},
+		{backRow[0], btn("Сбросить", "ux")},
+	}
 	kb := append(telegram.Keyboard{periodRow("tr:", "")}, tail...)
 
 	r, err := b.usage(ctx, period, "")
@@ -153,10 +156,10 @@ func (b *Bot) trafficView(ctx context.Context, period string) view {
 	}
 
 	var (
-		rows    [][]string
-		buttons []telegram.Button
-		marked  []string
-		rest    uint64
+		rows     [][]string
+		buttons  []telegram.Button
+		isDirect []bool
+		rest     uint64
 	)
 	for _, it := range r.Sites {
 		if it.Total() == 0 {
@@ -171,22 +174,31 @@ func (b *Bot) trafficView(ctx context.Context, period string) view {
 		n := strconv.Itoa(len(buttons) + 1)
 		rows = append(rows, []string{n, siteName(it.Key), amount(it.Total())})
 		buttons = append(buttons, btn(n, b.siteRef("ts:"+pk+":", it.Key)))
-		if slices.Contains(names, it.Key) {
-			marked = append(marked, n)
+		isDirect = append(isDirect, slices.Contains(names, it.Key))
+	}
+	// A site sent direct is no longer counted, but stays in a longer
+	// period's list for a while; its number carries a mark that says so.
+	numWidth := -2
+	if slices.Contains(isDirect, true) {
+		numWidth = -3
+		for i, d := range isDirect {
+			if d {
+				rows[i][0] += directMark
+			} else {
+				rows[i][0] += " "
+			}
 		}
 	}
 	if rest > 0 {
 		rows = append(rows, []string{"", "Остальное", amount(rest)})
 	}
-	block := columns(rows, -2, 19, -7)
+	block := columns(rows, numWidth, 19, -7)
 	if r.Server.Up > 0 {
-		block += "\n\n" + columns([][]string{{"", "Сервер отправил", amount(r.Server.Up)}}, -2, 19, -7)
+		block += "\n\n" + columns([][]string{{"", "Сервер отправил", amount(r.Server.Up)}}, numWidth, 19, -7)
 	}
 	text := fmt.Sprintf("%s: %s.\n", head, amount(r.Total.Total())) + telegram.Mono(block)
-	if len(marked) > 0 {
-		// A site sent direct is no longer counted, but stays in a longer
-		// period's list for a while; this says why it has not gone.
-		text += "\nНапрямую уже: " + strings.Join(marked, ", ") + "."
+	if numWidth == -3 {
+		text += "\n" + directLegend()
 	}
 
 	kb = telegram.Keyboard{periodRow("tr:", "")}
@@ -334,4 +346,32 @@ func periodOf(key string) string {
 		return p
 	}
 	return usage.Day
+}
+
+// confirmReset asks before the traffic history is forgotten.
+func confirmReset() view {
+	return view{
+		text: "Стереть учёт трафика? Сайты и устройства начнут считаться с нуля. Счёт хостера это не меняет.",
+		kb: telegram.Keyboard{{
+			telegram.Button{Text: "Стереть", Data: "ux!", Style: telegram.StyleDanger},
+			btn("Отмена", "tr:d"),
+		}},
+	}
+}
+
+// resetUsage forgets the traffic history and says how that went, in a line
+// for a notice.
+func (b *Bot) resetUsage(ctx context.Context) string {
+	if b.Manager.Snapshot().Moving {
+		// The history goes to the new server as it was when the move began.
+		return "Идёт переезд. Сбросить учёт можно будет через пару минут, на новом сервере."
+	}
+	resp, err := b.Devices.Control(ctx, node.ControlRequest{Op: node.OpUsageReset})
+	switch {
+	case err != nil:
+		return "Не получилось: узел не отвечает."
+	case !resp.OK:
+		return "Не получилось: " + firstLine(resp.Error)
+	}
+	return "Учёт трафика начат заново."
 }

@@ -113,3 +113,36 @@ func TestASiteReportSaysWhoUsedTheSite(t *testing.T) {
 		t.Errorf("resp = %+v", resp.Usage)
 	}
 }
+
+func TestTheOperatorCanStartCountingAgain(t *testing.T) {
+	ctl, _, now := controlRig(t)
+	if resp := ctl.Handle(ControlRequest{Op: OpUsageReset}); resp.OK {
+		t.Error("a server that does not count was reset")
+	}
+	path := filepath.Join(t.TempDir(), "usage.json")
+	store, err := usage.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Add(*now, []usage.Record{{Device: "pc", Site: "Steam", Bytes: usage.Bytes{Down: 900}}})
+	store.AddServer(*now, usage.Bytes{Up: 1000})
+	if err := store.Save(*now); err != nil {
+		t.Fatal(err)
+	}
+	ctl.Usage = store
+
+	if resp := ctl.Handle(ControlRequest{Op: OpUsageReset}); !resp.OK {
+		t.Fatalf("reset: %+v", resp)
+	}
+	day := ctl.Handle(ControlRequest{Op: OpUsage, Period: usage.Month})
+	if day.Usage.Total.Total() != 0 || day.Usage.Server.Total() != 0 || len(day.Usage.Sites) != 0 {
+		t.Errorf("after reset: %+v", day.Usage.Report)
+	}
+	reopened, err := usage.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := reopened.Report(usage.Month, "", *now); r.Total.Total() != 0 || r.Server.Total() != 0 {
+		t.Errorf("the old history came back from the file: %+v", r)
+	}
+}

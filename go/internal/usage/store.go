@@ -221,6 +221,17 @@ func cut(m map[string]Bytes, n int) map[string]Bytes {
 	return out
 }
 
+// Reset forgets the whole history, for the operator who wants counting to
+// start again, and writes the empty history at once so a restart does not
+// bring the old one back.
+func (s *Store) Reset(now time.Time) error {
+	s.mu.Lock()
+	s.h = History{Version: historyVersion}
+	s.dirty = true
+	s.mu.Unlock()
+	return s.Save(now)
+}
+
 // Save writes the history if anything changed since it was last written,
 // first dropping what is too old.
 func (s *Store) Save(now time.Time) error {

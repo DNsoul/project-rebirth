@@ -329,13 +329,15 @@ func (b *Bot) deviceView(ctx context.Context, id string) view {
 		}
 		rows = append(rows, []string{"Был", when})
 	}
-	block := ""
+	block, legend := "", ""
 	if day, err := b.usage(ctx, usage.Day, id); err == nil {
 		rows = append(rows, []string{"Сутки", amount(day.Total.Total())})
 		if month, err := b.usage(ctx, usage.Month, id); err == nil {
 			rows = append(rows, []string{"Месяц", amount(month.Total.Total())})
 		}
 		var sites [][]string
+		marked := false
+		names, _ := b.directList(ctx)
 		for _, it := range day.Sites {
 			if len(sites) == 3 || it.Total() == 0 {
 				break
@@ -343,13 +345,24 @@ func (b *Bot) deviceView(ctx context.Context, id string) view {
 			if it.Key == usage.SiteOther {
 				continue
 			}
-			sites = append(sites, []string{siteName(it.Key), amount(it.Total())})
+			mark := " "
+			if slices.Contains(names, it.Key) {
+				mark, marked = directMark, true
+			}
+			sites = append(sites, []string{mark, siteName(it.Key), amount(it.Total())})
 		}
-		if len(sites) > 0 {
+		switch {
+		case marked:
+			block = "\n\n" + columns(sites, 1, 19, -7)
+			legend = "\n" + directLegend()
+		case len(sites) > 0:
+			for i := range sites {
+				sites[i] = sites[i][1:]
+			}
 			block = "\n\n" + columns(sites, 19, -7)
 		}
 	}
-	text := shownName(d) + "\n" + telegram.Mono(columns(rows, 12, 18)+block)
+	text := shownName(d) + "\n" + telegram.Mono(columns(rows, 12, 18)+block) + legend
 	return view{text: text, kb: telegram.Keyboard{
 		{btn("Переименовать", "nm:"+id), btn("Отозвать", "rv:"+id)},
 		{btn("‹ Устройства", "m:devices")},
